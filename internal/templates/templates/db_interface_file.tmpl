@@ -1,0 +1,31 @@
+package {{.Package}}
+
+import (
+	"context"
+	"{{.ModelsPkg}}"
+{{- range .ExtraImports}}
+	{{.}}
+{{- end}}
+
+	"github.com/jmoiron/sqlx"
+{{- if .WithGorm}}
+	"gorm.io/gorm"
+{{- end}}
+)
+
+type {{.StoreType}} struct {
+{{- if .WithGorm}}
+	oracle *gorm.DB
+{{- end}}
+	db *sqlx.DB
+}
+
+type {{.IfaceName}} interface {
+{{- range .Methods}}
+	{{.}}
+{{- end}}
+}
+
+func {{.CtorName}}({{if .WithGorm}}oracle *gorm.DB, {{end}}db *sqlx.DB) {{.IfaceName}} {
+	return &{{.StoreType}}{oracle: oracle, db: db}
+}

@@ -1,0 +1,237 @@
+package templates
+
+import "strings"
+
+// FieldSpec is one struct field in a models struct (PRD §4.8.3: json tags =
+// raw FML field names; db tags = SELECT aliases; gin binding validators).
+type FieldSpec struct {
+	Name      string // Go field name, e.g. CompCode
+	Type      string // string, sql.NullString, sql.NullTime, int64, ...
+	JSONTag   string // raw FML name, e.g. FML_COMP_CD (request/response fields)
+	OmitEmpty bool   // response fields carry ,omitempty
+	DBTag     string // SELECT alias, e.g. COMP_CD (row-struct fields)
+	Binding   string // gin validator list, e.g. "required,matchaccount"
+	ErrMsg    string // custom validator message rendered as error:"..."
+}
+
+// Tag renders the struct tag for the field.
+func (f FieldSpec) Tag() string {
+	var parts []string
+	switch {
+	case f.JSONTag != "":
+		tag := f.JSONTag
+		if f.OmitEmpty {
+			tag += ",omitempty"
+		}
+		parts = append(parts, "json:\""+tag+"\"")
+	case f.DBTag != "":
+		parts = append(parts, "db:\""+f.DBTag+"\"")
+	}
+	if f.Binding != "" {
+		parts = append(parts, "binding:\""+f.Binding+"\"")
+	}
+	if f.ErrMsg != "" {
+		parts = append(parts, "error:\""+f.ErrMsg+"\"")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " ")
+}
+
+// HasNullType reports whether any field uses a database/sql Null* type.
+func HasNullType(structs []StructSpec) bool {
+	for _, s := range structs {
+		for _, f := range s.Fields {
+			if strings.HasPrefix(f.Type, "sql.Null") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// StructSpec is one struct in the models file.
+type StructSpec struct {
+	Name   string
+	Fields []FieldSpec
+}
+
+// ModelFileData renders models.go.
+type ModelFileData struct {
+	Package string // "models"
+	Structs []StructSpec
+}
+
+// HasNullTypes reports whether the file needs `import "database/sql"`.
+func (d ModelFileData) HasNullTypes() bool { return HasNullType(d.Structs) }
+
+// ParamSpec is one function parameter.
+type ParamSpec struct{ Name, Type string }
+
+// DBMethodData renders a store method (PRD §4.8.2 contract: ctx first arg,
+// positional :1 binds, columns aliased AS "COL" matching db tags, GetContext /
+// SelectContext / ExecContext).
+type DBMethodData struct {
+	Receiver   string // g
+	StoreType  string // store
+	Name       string // GetNavDetails
+	Doc        string // optional doc comment (multi-line, already commented)
+	CtxName    string // c (nav example) or ctx
+	Params     []ParamSpec
+	Query      string // backtick-free SQL body placed inside a raw string literal
+	VarName    string // scan target variable, e.g. navDetails / dateinfo / count
+	RowType    string // models.NavDetails ("" for scalar results)
+	Scalar     string // int64 etc. when RowType == ""
+	Multi      bool   // SelectContext into []*T
+	TxParam    bool   // takes tx *sqlx.Tx as second parameter (DML / tx-variant read)
+	SuccessMsg string // insert/update debug log after a successful exec
+}
+
+// ArgList renders the comma-separated bind argument names.
+func (d DBMethodData) ArgList() string {
+	names := make([]string, len(d.Params))
+	for i, p := range d.Params {
+		names[i] = p.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+// ReturnType renders the Go return type pair.
+func (d DBMethodData) ReturnType() string {
+	switch {
+	case d.Multi && d.RowType != "":
+		return "[]*" + d.RowType
+	case d.RowType != "":
+		return "*" + d.RowType
+	default:
+		return d.Scalar
+	}
+}
+
+// DBInterfaceData renders db/interface.go (store struct + <Name>Store
+// interface + constructor; the interface accretes one line per generated
+// method — PRD §4.2.3).
+type DBInterfaceData struct {
+	Package      string // "db"
+	StoreType    string // "store"
+	IfaceName    string // "NavStore"
+	CtorName     string // "NewNavStore"
+	WithGorm     bool   // store carries the legacy *gorm.DB handle alongside sqlx
+	ModelsPkg    string // models package import path
+	ExtraImports []string
+	Methods      []string // rendered signatures, one line each
+}
+
+// ControllerInterfaceData renders controller/interface.go (PRD §4.8.6).
+type ControllerInterfaceData struct {
+	Package    string // "controller"
+	StructName string // "navController"
+	IfaceName  string // "NavController"
+	CtorName   string // "NewNavController"
+	DBPkg      string // db package import path
+	ModelsPkg  string // models package import path
+	StoreIface string // "db.NavStore"
+	Methods    []string
+}
+
+// ControllerMethodData renders one controller endpoint method (pure business
+// logic + store calls; the body slot is filled by the pipeline/LLM).
+type ControllerMethodData struct {
+	StructName   string // "navController"
+	Name         string // "NavList"
+	CtxName      string // "ctx"
+	RequestType  string // "models.NavRequest"
+	ResponseType string // "models.NavResponse"
+	Body         string // logic including any return statements
+}
+
+// HandlerInterfaceData renders handler/interface.go: handler struct + interface
+// + constructor + the wiring function building the store from the existing repo
+// (PRD §4.8.6, OQ11).
+type HandlerInterfaceData struct {
+	Package         string   // "handler"
+	Module          string   // "mutual-fund-be"
+	Service         string   // "nav"
+	StructName      string   // "navHandler"
+	IfaceName       string   // "NavHandler"
+	CtorName        string   // "NewNavHandler"
+	WiringFnName    string   // "NavController" (repo.DataObject wiring function)
+	ControllerIface string   // "NavController"
+	ControllerCtor  string   // "NewNavController"
+	StoreCtor       string   // "NewNavStore"
+	ReadDBs         []string // "EBATEST", "MF"
+	Methods         []string
+}
+
+// ReadDBArgList renders the repo.Databases.ReadDatabase.* constructor args.
+func (h HandlerInterfaceData) ReadDBArgList() string {
+	args := make([]string, len(h.ReadDBs))
+	for i, db := range h.ReadDBs {
+		args[i] = "repo.Databases.ReadDatabase." + db
+	}
+	return strings.Join(args, ", ")
+}
+
+// HandlerMethodData renders one gin handler method (PRD §4.8.6 handler shape).
+type HandlerMethodData struct {
+	StructName  string // "navHandler"
+	Name        string // "NavList"
+	RequestType string // "models.NavRequest"
+}
+
+// DBSelectTxData renders a tx-variant single-row read (GetMarks shape in
+// examples/dbTransactionEx.txt): a mid-flow read inside a sequential-crux flow
+// runs on tx, takes `tx *sqlx.Tx` as its second parameter (PRD §4.2.3 variant
+// rule) and propagates every error — including sql.ErrNoRows — to the flow.
+type DBSelectTxData struct {
+	Receiver  string // g
+	StoreType string // store
+	Name      string // GetMarks
+	CtxName   string // ctx
+	Params    []ParamSpec
+	Query     string
+	VarName   string // "marks"
+	ScanType  string // "sql.NullString"
+	Extract   string // "marks.String"
+	Zero      string // `""` — zero-value return on the error path
+	Return    string // "string"
+}
+
+// ArgList renders the comma-separated bind argument names.
+func (d DBSelectTxData) ArgList() string {
+	names := make([]string, len(d.Params))
+	for i, p := range d.Params {
+		names[i] = p.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+// ControllerTxMethodData renders a controller endpoint that wraps a
+// sequential-crux flow in utils.ExecTransaction (AssessQnA shape in
+// examples/controllerTxSignature.txt; decision 27): pre-flow reads run outside
+// the tx, every call inside the closure takes tx, post-commit reads assemble
+// the response.
+type ControllerTxMethodData struct {
+	Receiver     string // "c"
+	StructName   string // "controller"
+	Name         string // "AssessQnA"
+	CtxName      string // "ctx"
+	RequestType  string // "models.AssessQnARequest"
+	ResponseType string // "models.AssessQnAResponse"
+	PreFlow      string // code before the tx opens (errors → return nil, err)
+	TxBody       string // crux sequence; ends with `return nil`
+	PostFlow     string // code after the wrapper; ends with the return statement
+}
+
+// RouteSpec is one router entry.
+type RouteSpec struct {
+	Path    string // "/mfnavhistory"
+	Handler string // "NavHistory"
+}
+
+// RouterData renders the router snippet (examples/router.txt shape).
+type RouterData struct {
+	Service string // "nav"
+	Routes  []RouteSpec
+}

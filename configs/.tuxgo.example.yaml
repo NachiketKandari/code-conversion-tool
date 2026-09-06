@@ -1,0 +1,69 @@
+# .tuxgo.yaml — tuxgo run configuration (PRD F7, R1).
+#
+# Copy to the working-directory root (next to the tuxgo binary and the tux/
+# corpus) and edit. All paths are relative to this file. API keys are
+# environment-variable NAMES only — never literals (R6); the Phase 1 loader
+# resolves them at runtime. Absent sections fall back to the defaults shown
+# here.
+#
+# Working-directory layout this config assumes (v0.6.3):
+#
+#   <workdir>/
+#     tuxgo                  # built binary (go build -o tuxgo ./cmd/tuxgo)
+#     .tuxgo.yaml            # this config
+#     tux/                   # the .pc corpus to convert (default input)
+#     conversion_logs/       # everything the tool writes (logs, audit, later
+#                            #  ledger + IR state) — gitignored
+#
+# Analyzer scoring weights are deliberately NOT configured here: per-fn
+# tuning lives in the generated CSV (tuxgo analyze -weights <csv>).
+
+run:
+  profile: isec-vllm          # which models[] entry generation uses (R1)
+  temperature: 0.1            # pinned for deterministic runs (Q1)
+  maxContextTokens: 16000     # the model's context window — hard ceiling (R2)
+  maxPromptTokens: 12000      # assembled-prompt budget: 12k in … (§4.3)
+  maxOutputTokens: 4000       # … 4k out
+
+models:                      # OpenAI-compatible profiles, same client seam (R1)
+  - name: isec-vllm          # production generation endpoint (default)
+    provider: openai-compatible
+    model: qwen3-vl-30b-a3b
+    apiBase: http://10.213.190.86:8002/v1
+    apiKeyEnv: ISEC_API_KEY
+    requestOptions:
+      temperature: 0.1
+      maxTokens: 4000
+      stream: true           # SSE streaming
+      timeout: 120s
+      retries: 3
+  - name: local-dev-openrouter # local development profile, same schema
+    provider: openai-compatible
+    model: <openrouter-model-id>
+    apiBase: https://openrouter.ai/api/v1
+    apiKeyEnv: OPENROUTER_API_KEY
+    requestOptions:
+      temperature: 0.1
+      maxTokens: 4000
+      stream: true
+
+retrieval:                   # MVP: disabled — deterministic context only (OQ1)
+  enabled: false             # V2 = pure-Go BM25, V3 = vector/embeddings —
+  # maxContextTokens: 12000  #   both plug in behind the Retriever seam
+
+elision:
+  mode: safe                 # bodies → "// … elided" placeholders (G3)
+
+concurrency:
+  workers: 1                 # opt-in parallel DB-unit generation; correctness never depends on it
+
+validate:                    # gofmt → go build → go vet → go test loop (G6)
+  maxRetries: 3              # bounded retries with trimmed errors fed back
+
+paths:
+  tux: tux/                    # the .pc corpus to convert (OQ19 default: "convert this .pc" locates it here)
+  target: ../existing-go-service # existing service: models/db/controller/handler — generated code plugs in (R8)
+  logs: conversion_logs/logs   # unified slog JSONL stream (Q6)
+  audit: conversion_logs/audit  # per-run audit trail (§4.7)
+  ledger: conversion_logs/ledger # unit status + source→target conversion map (§4.6, Phase 5)
+  state: conversion_logs/state   # IR cache, re-indexed on mtime (Phase 2)
