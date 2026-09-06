@@ -48,6 +48,8 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 		Calls:       s.calls,
 		AllSQL:      s.allSQL,
 		Queries:     s.queries,
+		Branches:    s.branches,
+		VarDecls:    s.varDecls,
 		TpCallCount: s.tpcallCount,
 	}, nil
 }
@@ -65,7 +67,20 @@ type scannerState struct {
 	calls       []FunctionCall
 	allSQL      []ExecSQLStatement
 	queries     []ExecSQLStatement
+	branches    []Branch
+	varDecls    []VarDecl
 	tpcallCount int
+
+	pendingFn   int    // index into functions awaiting its body brace (-1 none)
+	curFn       int    // index of the function whose body we are inside (-1 none)
+	pendingType string // base type seen, awaiting a declarator ("" none)
+}
+
+func (s *scannerState) fnName(idx int) string {
+	if idx < 0 || idx >= len(s.functions) {
+		return ""
+	}
+	return s.functions[idx].Name
 }
 
 func (s *scannerState) peek() byte {
@@ -143,8 +158,15 @@ func (s *scannerState) scan() {
 
 		// 7. Track braces.
 		if s.src[s.pos] == '{' {
+			if braceDepth == 0 && s.pendingFn >= 0 {
+				// The function definition's body opens here.
+				s.functions[s.pendingFn].BodyStartLine = s.line
+				s.curFn = s.pendingFn
+				s.pendingFn = -1
+			}
 			braceDepth++
 			s.advance()
+			s.pendingType = ""
 			prevIdent = ""
 			continue
 		}
@@ -152,7 +174,12 @@ func (s *scannerState) scan() {
 			if braceDepth > 0 {
 				braceDepth--
 			}
+			if braceDepth == 0 && s.curFn >= 0 {
+				s.functions[s.curFn].BodyEndLine = s.line
+				s.curFn = -1
+			}
 			s.advance()
+			s.pendingType = ""
 			prevIdent = ""
 			continue
 		}
@@ -169,8 +196,18 @@ func (s *scannerState) scan() {
 			savedCol := s.col
 			s.skipWhitespace()
 
-			if s.pos < s.len && s.src[s.pos] == '(' {
-				// It is a call or a definition
+			if ident == "if" {
+				kind := BranchIf
+				if prevIdent == "else" {
+					kind = BranchElseIf
+				}
+				s.recordIfBranch(kind, startLine, braceDepth)
+			} else if ident == "else" {
+				s.recordElseBranch(startLine, braceDepth)
+			} else if s.pos < s.len && s.src[s.pos] == '(' {
+				// A call or a definition — either way any pending type
+				// context is done (e.g. `long fn_x(...)` is a def).
+				s.pendingType = ""
 				if !cKeywordsWithParen[ident] {
 					if braceDepth == 0 && isLikelyFuncDef(prevIdent, ident, s.src, s.pos) {
 						s.functions = append(s.functions, FunctionDef{
@@ -178,6 +215,7 @@ func (s *scannerState) scan() {
 							ReturnType: prevIdent,
 							StartLine:  startLine,
 						})
+						s.pendingFn = len(s.functions) - 1
 					} else {
 						isTp := ident == "tpcall"
 						if isTp {
@@ -187,12 +225,28 @@ func (s *scannerState) scan() {
 							Name:      ident,
 							Line:      startLine,
 							Col:       startCol,
+							Args:      s.balancedParenText(s.pos),
 							IsTpCall:  isTp,
 							IsFnPref:  strings.HasPrefix(ident, "fn_"),
 							IsChkPref: strings.HasPrefix(ident, "chk_"),
+							Func:      s.fnName(s.curFn),
 						})
 					}
 				}
+			} else if isTypeKeyword(ident) {
+				if s.isCastContext() {
+					// `(char*)x` — a cast, not a declaration type.
+					s.pendingType = ""
+				} else if endsWithModifier(s.pendingType) {
+					// `unsigned long`, `long long` — accumulate modifiers.
+					s.pendingType += " " + ident
+				} else {
+					// A new type restarts the declarator context
+					// (`char* a, char* b` is two `char` decls, not `char char`).
+					s.pendingType = ident
+				}
+			} else if s.pendingType != "" && !cKeywords[ident] {
+				s.recordVarDecl(ident, braceDepth)
 			}
 
 			// Restore pos if we skipped whitespace
@@ -206,9 +260,15 @@ func (s *scannerState) scan() {
 
 		// Normal punctuation / bytes
 		if !unicode.IsSpace(rune(s.src[s.pos])) {
-			// Semicolon resets prevIdent
+			// Semicolon resets prevIdent, closes any pending declaration
+			// list, and turns an unbraced (prototype) definition back into
+			// a non-definition.
 			if s.src[s.pos] == ';' {
 				prevIdent = ""
+				s.pendingType = ""
+				if braceDepth == 0 {
+					s.pendingFn = -1
+				}
 			}
 		}
 		s.advance()
@@ -381,6 +441,7 @@ func (s *scannerState) scanExecSQL() {
 		StartLine:  startLine,
 		EndLine:    endLine,
 		CursorName: cursorName,
+		Func:       s.fnName(s.curFn),
 	}
 
 	s.allSQL = append(s.allSQL, stmt)
@@ -468,6 +529,261 @@ func isIdentStart(b byte) bool {
 
 func isIdentChar(b byte) bool {
 	return isIdentStart(b) || (b >= '0' && b <= '9')
+}
+
+var cKeywords = map[string]bool{
+	"return": true, "if": true, "else": true, "while": true, "for": true,
+	"do": true, "switch": true, "case": true, "default": true, "break": true,
+	"continue": true, "goto": true, "sizeof": true, "typedef": true,
+	"struct": true, "union": true, "enum": true, "extern": true,
+	"static": true, "register": true, "volatile": true, "const": true,
+}
+
+var typeKeywords = map[string]bool{
+	"char": true, "int": true, "long": true, "short": true, "double": true,
+	"float": true, "unsigned": true, "signed": true, "void": true,
+	"varchar": true, // Pro*C host type
+}
+
+func isTypeKeyword(ident string) bool { return typeKeywords[ident] }
+
+// endsWithModifier reports whether a pending type ends in a modifier that
+// another type keyword can extend (unsigned long, long long, …).
+func endsWithModifier(pending string) bool {
+	switch pending {
+	case "unsigned", "signed", "long", "short", "unsigned long", "long long":
+		return true
+	}
+	return false
+}
+
+// isCastContext reports whether the type keyword just scanned opens a cast —
+// an optional run of `*`s followed by `)` (read-only lookahead).
+func (s *scannerState) isCastContext() bool {
+	off := s.skipReadOnly(s.pos)
+	for off < s.len && s.src[off] == '*' {
+		off = s.skipReadOnly(off + 1)
+	}
+	return off < s.len && s.src[off] == ')'
+}
+
+// skipReadOnly returns the offset of the next significant byte at or after
+// off, skipping whitespace and comments. Read-only: never mutates scan state.
+func (s *scannerState) skipReadOnly(off int) int {
+	for off < s.len {
+		b := s.src[off]
+		if b == ' ' || b == '\t' || b == '\r' || b == '\n' {
+			off++
+			continue
+		}
+		if b == '/' && off+1 < s.len {
+			if s.src[off+1] == '*' {
+				off += 2
+				for off < s.len {
+					if s.src[off] == '*' && off+1 < s.len && s.src[off+1] == '/' {
+						off += 2
+						break
+					}
+					off++
+				}
+				continue
+			}
+			if s.src[off+1] == '/' {
+				for off < s.len && s.src[off] != '\n' {
+					off++
+				}
+				continue
+			}
+		}
+		return off
+	}
+	return off
+}
+
+// lineAt computes the line number of an offset that is at or after the
+// current scan position (read-only forward scans only).
+func (s *scannerState) lineAt(off int) int {
+	line := s.line
+	for i := s.pos; i < off && i < s.len; i++ {
+		if s.src[i] == '\n' {
+			line++
+		}
+	}
+	return line
+}
+
+// balancedParenText returns the raw text between the parenthesis at off and
+// its match ("" when off is not '(' or the parens never balance). Strings,
+// chars, and comments inside are carried through verbatim.
+func (s *scannerState) balancedParenText(off int) string {
+	if off >= s.len || s.src[off] != '(' {
+		return ""
+	}
+	depth := 0
+	for i := off; i < s.len; i++ {
+		switch b := s.src[i]; b {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return string(s.src[off+1 : i])
+			}
+		case '"':
+			i = s.skipQuotedReadOnly(i, '"')
+		case '\'':
+			i = s.skipQuotedReadOnly(i, '\'')
+		case '/':
+			if i+1 < s.len {
+				if s.src[i+1] == '*' {
+					i = s.skipBlockCommentReadOnly(i)
+				} else if s.src[i+1] == '/' {
+					for i < s.len && s.src[i] != '\n' {
+						i++
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// skipQuotedReadOnly returns the index of the closing quote for the literal
+// opening at i (handling backslash escapes).
+func (s *scannerState) skipQuotedReadOnly(i int, quote byte) int {
+	for j := i + 1; j < s.len; j++ {
+		if s.src[j] == '\\' {
+			j++
+			continue
+		}
+		if s.src[j] == quote {
+			return j
+		}
+	}
+	return s.len
+}
+
+func (s *scannerState) skipBlockCommentReadOnly(i int) int {
+	for j := i + 2; j < s.len; j++ {
+		if s.src[j] == '*' && j+1 < s.len && s.src[j+1] == '/' {
+			return j + 1
+		}
+	}
+	return s.len
+}
+
+// blockExtent returns the line numbers of the opening brace at off and its
+// matching close (ok=false when off is not '{' or the block never closes).
+func (s *scannerState) blockExtent(off int) (start, end int, ok bool) {
+	if off >= s.len || s.src[off] != '{' {
+		return 0, 0, false
+	}
+	start = s.lineAt(off)
+	depth := 0
+	for i := off; i < s.len; i++ {
+		switch b := s.src[i]; b {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return start, s.lineAt(i), true
+			}
+		case '"':
+			i = s.skipQuotedReadOnly(i, '"')
+		case '\'':
+			i = s.skipQuotedReadOnly(i, '\'')
+		case '/':
+			if i+1 < s.len {
+				if s.src[i+1] == '*' {
+					i = s.skipBlockCommentReadOnly(i)
+				} else if s.src[i+1] == '/' {
+					for i < s.len && s.src[i] != '\n' {
+						i++
+					}
+				}
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// recordIfBranch captures one if/else-if header and its block. Read-only:
+// the main loop rescans the region normally afterwards.
+func (s *scannerState) recordIfBranch(kind BranchKind, startLine, depth int) {
+	off := s.skipReadOnly(s.pos)
+	if off >= s.len || s.src[off] != '(' {
+		return
+	}
+	inner := s.balancedParenText(off)
+	cond := strings.Join(strings.Fields(inner), " ")
+	blockStart, blockEnd := 0, 0
+	// off: '(' at off, inner between, close paren at off+1+len(inner).
+	if end := off + 2 + len(inner); end <= s.len {
+		if open := s.skipReadOnly(end); open < s.len && s.src[open] == '{' {
+			blockStart, blockEnd, _ = s.blockExtent(open)
+		}
+	}
+	s.branches = append(s.branches, Branch{
+		Kind:       kind,
+		Cond:       cond,
+		StartLine:  startLine,
+		BlockStart: blockStart,
+		BlockEnd:   blockEnd,
+		Depth:      depth,
+		Function:   s.fnName(s.curFn),
+	})
+}
+
+// recordElseBranch captures a plain else block; an `else if` is recorded by
+// recordIfBranch as BranchElseIf instead.
+func (s *scannerState) recordElseBranch(startLine, depth int) {
+	off := s.skipReadOnly(s.pos)
+	if off >= s.len {
+		return
+	}
+	if s.src[off] != '{' {
+		return // `else if` chain link or `else` + label — the if-record handles it
+	}
+	blockStart, blockEnd, ok := s.blockExtent(off)
+	if !ok {
+		return
+	}
+	s.branches = append(s.branches, Branch{
+		Kind:       BranchElse,
+		StartLine:  startLine,
+		BlockStart: blockStart,
+		BlockEnd:   blockEnd,
+		Depth:      depth,
+		Function:   s.fnName(s.curFn),
+	})
+}
+
+// recordVarDecl records a declarator for the pending base type when the next
+// significant byte continues a declaration (; [ = , ).
+func (s *scannerState) recordVarDecl(name string, depth int) {
+	off := s.skipReadOnly(s.pos)
+	if off >= s.len {
+		return
+	}
+	next := s.src[off]
+	switch next {
+	case ';', '=', ',', ')':
+		s.varDecls = append(s.varDecls, VarDecl{
+			Type: s.pendingType,
+			Name: name,
+			Line: s.line,
+			Func: s.fnName(s.curFn),
+		})
+	case '[':
+		s.varDecls = append(s.varDecls, VarDecl{
+			Type:  s.pendingType,
+			Name:  name,
+			Line:  s.line,
+			Array: true,
+			Func:  s.fnName(s.curFn),
+		})
+	}
 }
 
 func isLikelyFuncDef(prevIdent, ident string, src []byte, openParenPos int) bool {

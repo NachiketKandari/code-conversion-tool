@@ -39,9 +39,12 @@ models:                      # OpenAI-compatible profiles, same client seam (R1)
       retries: 3
   - name: local-dev-openrouter # local development profile, same schema
     provider: openai-compatible
-    model: <openrouter-model-id>
+    model: <openrouter-model-id>   # e.g. qwen/qwen3-vl-30b-a3b-instruct (closest to the isec model)
     apiBase: https://openrouter.ai/api/v1
     apiKeyEnv: OPENROUTER_API_KEY
+    # apiKey: <literal>           # local-only alternative to apiKeyEnv: keep it in THIS
+    #                             # gitignored file at the workdir root, never commit it (R6).
+    #                             # Resolution order: env var first, literal fallback.
     requestOptions:
       temperature: 0.1
       maxTokens: 4000

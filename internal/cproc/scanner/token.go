@@ -75,14 +75,18 @@ type ExecSQLStatement struct {
 	StartLine  int
 	EndLine    int
 	CursorName string // populated for DECLARE CURSOR, OPEN, FETCH, CLOSE
+	Func       string // enclosing function name ("" when outside any body)
 }
 
 // FunctionDef records a function definition at file scope. Body extent is
-// derived by consumers (next definition's StartLine), not stored.
+// brace-matched; consumers may still derive it (next definition's StartLine)
+// when the body was not closed.
 type FunctionDef struct {
-	Name       string
-	ReturnType string
-	StartLine  int
+	Name          string
+	ReturnType    string
+	StartLine     int
+	BodyStartLine int // line of the opening brace (0 when unresolved)
+	BodyEndLine   int // line of the matching closing brace (0 when unresolved)
 }
 
 // FunctionCall records an invocation of a function in live code.
@@ -90,9 +94,11 @@ type FunctionCall struct {
 	Name      string
 	Line      int
 	Col       int
+	Args      string // raw text between the call's parens ("" when unbalanced)
 	IsTpCall  bool
 	IsFnPref  bool // starts with "fn_"
 	IsChkPref bool // starts with "chk_"
+	Func      string
 }
 
 // Directive records a preprocessor directive (#include, #define).
@@ -104,6 +110,40 @@ type Directive struct {
 	IsSystem bool // angle brackets <...>
 }
 
+// BranchKind names the if/else chain role of a branch record.
+type BranchKind string
+
+const (
+	BranchIf     BranchKind = "if"
+	BranchElseIf BranchKind = "elseif"
+	BranchElse   BranchKind = "else"
+)
+
+// Branch records one if/else-if/else header and its block extent at any
+// nesting depth. Top-level chains of the entry function are reconstructed by
+// consumers (the IR condition inventory).
+type Branch struct {
+	Kind       BranchKind
+	Cond       string // normalized condition text ("" for else)
+	StartLine  int    // line of the if/else keyword
+	BlockStart int    // line of the block's opening brace (0 when unbraced)
+	BlockEnd   int    // line of the block's closing brace (0 when unbraced)
+	Depth      int    // brace depth at the keyword (function body top level == 1)
+	Function   string // enclosing function name ("" when outside any body)
+}
+
+// VarDecl records a variable declaration whose base type is one of the
+// recognized C/Pro*C base types (char, int, long, short, double, float,
+// varchar, …). Types from project headers (e.g. EXEC SQL include table/*.h)
+// never appear as declarations and stay untyped in the IR.
+type VarDecl struct {
+	Type  string
+	Name  string
+	Line  int
+	Array bool
+	Func  string // enclosing function name ("" for file-scope/params)
+}
+
 // SourceFacts represents all structural facts extracted from a Pro*C file.
 type SourceFacts struct {
 	Path        string
@@ -112,5 +152,7 @@ type SourceFacts struct {
 	Calls       []FunctionCall
 	AllSQL      []ExecSQLStatement
 	Queries     []ExecSQLStatement
+	Branches    []Branch
+	VarDecls    []VarDecl
 	TpCallCount int
 }

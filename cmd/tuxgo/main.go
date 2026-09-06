@@ -57,6 +57,11 @@ func main() {
 			log.Error("analyze failed", "error", err)
 			os.Exit(1)
 		}
+	case "extract":
+		if err := runExtract(ctx, rest[1:]); err != nil {
+			log.Error("extract failed", "error", err)
+			os.Exit(1)
+		}
 	case "plan", "convert":
 		log.Error("command not yet implemented", "command", rest[0], "phase", "Phase 5")
 		fmt.Fprintf(os.Stderr, "%s is planned for Phase 5 — not yet implemented\n\n", rest[0])
@@ -159,6 +164,8 @@ Global Flags:
 
 Available Commands:
   analyze      Analyze Pro*C/Tuxedo complexity (+1/+5/+10/+20 rubric) and export CSV
+  extract      Extract the deterministic IR (query units + QueryType marking, condition
+               inventory, FML ops, external fns) as JSON
   plan         Generate decomposition plan for a .pc file (planned, Phase 5)
   convert      Execute end-to-end conversion into target Go service (planned, Phase 5)
   version      Print version information
@@ -170,7 +177,7 @@ Available Commands:
 // arguments so flags may appear before or after the target path — the stdlib
 // flag package otherwise stops parsing at the first positional.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true}
+	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
