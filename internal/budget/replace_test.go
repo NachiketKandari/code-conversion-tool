@@ -124,7 +124,7 @@ func TestReplaceQueriesErrors(t *testing.T) {
 // same method, and the cursor-heavy branch view shrinks >60% (architecture.md
 // Phase 4 gate).
 func TestBudgetGateNavGolden(t *testing.T) {
-	const navPath = "../../testdata/nav/SVC_MF_NAV_LIST.pc"
+	const navPath = "../../testdata/nav/SVC_DEMO_LIST.pc"
 	f, err := ir.ExtractFile(navPath)
 	if err != nil {
 		t.Fatal(err)
@@ -138,13 +138,13 @@ func TestBudgetGateNavGolden(t *testing.T) {
 	// The plan-level call resolution: one method per dedup-collapsed query —
 	// q5 (duplicate of q3) resolves to the same GetCount method.
 	calls := map[string]DBCall{
-		"q1":              {Receiver: "store", Name: "GetDateDetails", CtxName: "c"},
-		"cur_mf_nav_hist": {Receiver: "store", Name: "GetNavHistory", CtxName: "c", Args: []string{"compCd", "schCd", "fromDate", "toDate"}},
-		"q3":              {Receiver: "store", Name: "GetCount", CtxName: "c", Args: []string{"matchAcc"}},
-		"cur_mf_freed":    {Receiver: "store", Name: "GetSipFreedem", CtxName: "c", Args: []string{"compCd", "matchAcc", "d2uFlg"}},
-		"q5":              {Receiver: "store", Name: "GetCount", CtxName: "c", Args: []string{"matchAcc"}},
-		"cur_mf_nav":      {Receiver: "store", Name: "GetNavList", CtxName: "c", Args: []string{"compCd", "asOf"}},
-		"cur_mf_nav_list": {Receiver: "store", Name: "GetNavDetails", CtxName: "c", Args: []string{"compCd"}},
+		"q1":                {Receiver: "store", Name: "GetDateDetails", CtxName: "c"},
+		"cur_demo_hist":     {Receiver: "store", Name: "GetNavHistory", CtxName: "c", Args: []string{"compCd", "schCd", "fromDate", "toDate"}},
+		"q3":                {Receiver: "store", Name: "GetCount", CtxName: "c", Args: []string{"matchAcc"}},
+		"cur_demo_featured": {Receiver: "store", Name: "GetSipFreedem", CtxName: "c", Args: []string{"compCd", "matchAcc", "demoFlg"}},
+		"q5":                {Receiver: "store", Name: "GetCount", CtxName: "c", Args: []string{"matchAcc"}},
+		"cur_demo_insured":  {Receiver: "store", Name: "GetNavList", CtxName: "c", Args: []string{"compCd", "asOf"}},
+		"cur_demo_list":     {Receiver: "store", Name: "GetNavDetails", CtxName: "c", Args: []string{"compCd"}},
 	}
 
 	view, err := ReplaceQueries(srcText, f.Queries, calls)
@@ -184,7 +184,7 @@ func TestBudgetGateNavGolden(t *testing.T) {
 	t.Logf("whole-file: %d chars → %d chars (SQL regions %.1f%% smaller)",
 		view.CharsBefore, view.CharsAfter, view.ShrinkPct())
 
-	// Cursor-heavy branch: the default branch carries cur_mf_nav_list
+	// Cursor-heavy branch: the default branch carries cur_demo_list
 	// (L836-965 inside an ~164-line branch). The branch view is what the
 	// controller unit consumes (§4.2.4) — it must shrink >60%.
 	var def *ir.Condition

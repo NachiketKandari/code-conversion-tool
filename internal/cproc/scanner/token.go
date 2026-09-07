@@ -106,7 +106,7 @@ type FunctionCall struct {
 // Directive records a preprocessor directive (#include, #define).
 type Directive struct {
 	Kind     string // "include", "define", etc.
-	Arg      string // e.g. <atmi.h> or "table/mf_navs.h"
+	Arg      string // e.g. <atmi.h> or "table/demo_price.h"
 	Line     int
 	IsHeader bool
 	IsSystem bool // angle brackets <...>

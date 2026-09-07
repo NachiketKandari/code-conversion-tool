@@ -26,13 +26,13 @@ func navMapping() *Mapping {
 			{Condition: 4, Name: "NavList", Route: "/mfnavschemelist"},
 		},
 		DBMethods: map[string]MethodPin{
-			"q1":                  {Name: "GetDateDetails"},
-			"cur_mf_nav_hist":     {Name: "GetNavHistory"},
-			"q3":                  {Name: "GetCount", Params: []string{"matchAccount:string"}},
-			"cur_mf_freed":        {Name: "GetSipFreedem"},
-			"cur_mf_nav":          {Name: "GetSipInsurance"},
-			"cur_mf_nav_list":     {Name: "GetNavDetails"},
-			"fn_is_d2u_active:q1": {Name: "IsD2uActive"},
+			"q1":                   {Name: "GetDateDetails"},
+			"cur_demo_hist":        {Name: "GetNavHistory"},
+			"q3":                   {Name: "GetCount", Params: []string{"matchAccount:string"}},
+			"cur_demo_featured":    {Name: "GetSipFreedem"},
+			"cur_demo_insured":     {Name: "GetSipInsurance"},
+			"cur_demo_list":        {Name: "GetNavDetails"},
+			"fn_is_demo_active:q1": {Name: "IsDemoActive"},
 		},
 	}
 }
@@ -46,7 +46,7 @@ func navOptions(t *testing.T) Options {
 	var main *ir.File
 	var fns []*ir.File
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, "SVC_MF_NAV_LIST.pc") {
+		if strings.HasSuffix(f.Path, "SVC_DEMO_LIST.pc") {
 			main = f
 		} else {
 			fns = append(fns, f)
@@ -85,7 +85,7 @@ func TestPlanGateNavGolden(t *testing.T) {
 		}
 	}
 	if db != 7 {
-		t.Errorf("db units = %d, want 7 (6 main unique + fn_is_d2u_active:q1): %v", db, dbNames)
+		t.Errorf("db units = %d, want 7 (6 main unique + fn_is_demo_active:q1): %v", db, dbNames)
 	}
 	if ctrl != 4 || handler != 4 {
 		t.Errorf("controller/handler units = %d/%d, want 4/4", ctrl, handler)
@@ -105,20 +105,20 @@ func TestPlanGateNavGolden(t *testing.T) {
 	// External fn unit: namespaced query, real source file.
 	var fnUnit *Unit
 	for i := range p.Units {
-		if p.Units[i].Name == "IsD2uActive" {
+		if p.Units[i].Name == "IsDemoActive" {
 			fnUnit = &p.Units[i]
 		}
 	}
 	if fnUnit == nil {
 		t.Fatal("external-fn db unit missing")
 	}
-	if !strings.HasSuffix(fnUnit.SourceFile, "fn_d2u_mf.pc") || !strings.Contains(fnUnit.QueryIDs[0], "fn_is_d2u_active") {
+	if !strings.HasSuffix(fnUnit.SourceFile, "fn_demo_lib.pc") || !strings.Contains(fnUnit.QueryIDs[0], "fn_is_demo_active") {
 		t.Errorf("fn unit = %+v", fnUnit)
 	}
 
 	// chk_* dropped, unresolved fns are visible blockers, zero orphans.
-	if len(p.Dropped) != 1 || !strings.Contains(p.Dropped[0], "chk_sssn") {
-		t.Errorf("dropped = %v, want chk_sssn", p.Dropped)
+	if len(p.Dropped) != 1 || !strings.Contains(p.Dropped[0], "chk_session") {
+		t.Errorf("dropped = %v, want chk_session", p.Dropped)
 	}
 	if len(p.Blockers) != 1 || p.Blockers[0].Fn != "fn_long_to_int" || len(p.Blockers[0].Endpoints) == 0 {
 		t.Errorf("blockers = %+v, want fn_long_to_int with affected endpoints", p.Blockers)
@@ -170,7 +170,7 @@ func TestPlanSkipsUnmappedBranchQueries(t *testing.T) {
 		}
 	}
 	m.Endpoints = eps
-	delete(m.DBMethods, "cur_mf_nav")
+	delete(m.DBMethods, "cur_demo_insured")
 	opts.Mapping = m
 	p, err := Build(opts)
 	if err != nil {
@@ -180,8 +180,8 @@ func TestPlanSkipsUnmappedBranchQueries(t *testing.T) {
 	for _, s := range p.Skipped {
 		skipped[s.QueryID] = s.Reason
 	}
-	if _, ok := skipped["cur_mf_nav"]; !ok {
-		t.Errorf("cur_mf_nav must be a recorded skip, got %v", p.Skipped)
+	if _, ok := skipped["cur_demo_insured"]; !ok {
+		t.Errorf("cur_demo_insured must be a recorded skip, got %v", p.Skipped)
 	}
 	if len(p.Orphans) != 0 {
 		t.Errorf("orphans = %v", p.Orphans)

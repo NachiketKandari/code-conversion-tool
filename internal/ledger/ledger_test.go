@@ -17,7 +17,7 @@ func TestLedgerRoundTripAndResume(t *testing.T) {
 	}
 	l.Set("u02", StatusValidated, "")
 	l.Set("u02", StatusAppended, "", "pkg/services/nav/db/nav.go")
-	l.AddMap("SVC_MF_NAV_LIST.pc :: GetNavHistory (L232-343)", "pkg/services/nav/db/nav.go")
+	l.AddMap("SVC_DEMO_LIST.pc :: GetNavHistory (L232-343)", "pkg/services/nav/db/nav.go")
 	if err := l.Save(); err != nil {
 		t.Fatal(err)
 	}

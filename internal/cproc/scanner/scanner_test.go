@@ -7,10 +7,10 @@ import (
 )
 
 func TestScannerNavFixture(t *testing.T) {
-	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "SVC_MF_NAV_LIST.pc")
+	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "SVC_DEMO_LIST.pc")
 	facts, err := ScanFile(pcPath)
 	if err != nil {
-		t.Fatalf("failed scanning SVC_MF_NAV_LIST.pc: %v", err)
+		t.Fatalf("failed scanning SVC_DEMO_LIST.pc: %v", err)
 	}
 
 	// 1. Assert exactly 7 live database queries
@@ -26,16 +26,16 @@ func TestScannerNavFixture(t *testing.T) {
 		t.Errorf("expected 0 tpcall, got %d", facts.TpCallCount)
 	}
 
-	// 3. Verify function calls: chk_sssn, fn_is_d2u_active and fn_long_to_int are detected.
-	// fn_long_to_int is called in LIVE code (the "Ver 1.5 added here for IBM"
+	// 3. Verify function calls: chk_session, fn_is_demo_active and fn_long_to_int are detected.
+	// fn_long_to_int is called in LIVE code (the "rev 1.5 added here for demo"
 	// region is delimited by banner comments, not wrapped in a C comment).
-	var foundChkSssn, foundFnD2u, foundFnLongToInt bool
+	var foundChkSssn, foundFnDemo, foundFnLongToInt bool
 	for _, call := range facts.Calls {
-		if call.Name == "chk_sssn" {
+		if call.Name == "chk_session" {
 			foundChkSssn = true
 		}
-		if call.Name == "fn_is_d2u_active" {
-			foundFnD2u = true
+		if call.Name == "fn_is_demo_active" {
+			foundFnDemo = true
 		}
 		if call.Name == "fn_long_to_int" {
 			foundFnLongToInt = true
@@ -43,24 +43,24 @@ func TestScannerNavFixture(t *testing.T) {
 	}
 
 	if !foundChkSssn {
-		t.Errorf("expected chk_sssn to be detected as a function call")
+		t.Errorf("expected chk_session to be detected as a function call")
 	}
-	if !foundFnD2u {
-		t.Errorf("expected fn_is_d2u_active to be detected as a function call")
+	if !foundFnDemo {
+		t.Errorf("expected fn_is_demo_active to be detected as a function call")
 	}
 	if !foundFnLongToInt {
 		t.Errorf("expected fn_long_to_int to be detected as a function call (live code between version banners)")
 	}
 
-	// 4. Verify local function definition SVC_MF_NAV_LIST
+	// 4. Verify local function definition SVC_DEMO_LIST
 	var foundSvcFunc bool
 	for _, fn := range facts.Functions {
-		if fn.Name == "SVC_MF_NAV_LIST" {
+		if fn.Name == "SVC_DEMO_LIST" {
 			foundSvcFunc = true
 		}
 	}
 	if !foundSvcFunc {
-		t.Errorf("expected function definition SVC_MF_NAV_LIST to be found")
+		t.Errorf("expected function definition SVC_DEMO_LIST to be found")
 	}
 
 	// 5. Directives: system headers are recorded (Phase 2 IR input).
@@ -82,7 +82,7 @@ func TestScannerNavFixture(t *testing.T) {
 		if s.Kind == SQLDeclareSection {
 			foundDeclareSection = true
 		}
-		if s.Kind == SQLInclude && strings.Contains(s.Normalized, "mf_navs.h") {
+		if s.Kind == SQLInclude && strings.Contains(s.Normalized, "demo_price.h") {
 			foundTableInclude = true
 		}
 	}
@@ -90,18 +90,18 @@ func TestScannerNavFixture(t *testing.T) {
 		t.Errorf("expected EXEC SQL BEGIN/END DECLARE SECTION statements in AllSQL")
 	}
 	if !foundTableInclude {
-		t.Errorf(`expected EXEC SQL include "table/mf_navs.h" in AllSQL`)
+		t.Errorf(`expected EXEC SQL include "table/demo_price.h" in AllSQL`)
 	}
 	if len(facts.AllSQL) <= len(facts.Queries) {
 		t.Errorf("AllSQL must strictly contain Queries plus non-query statements (all=%d queries=%d)", len(facts.AllSQL), len(facts.Queries))
 	}
 }
 
-func TestScannerFnD2uFixture(t *testing.T) {
-	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "fn_d2u_mf.pc")
+func TestScannerFnDemoFixture(t *testing.T) {
+	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "fn_demo_lib.pc")
 	facts, err := ScanFile(pcPath)
 	if err != nil {
-		t.Fatalf("failed scanning fn_d2u_mf.pc: %v", err)
+		t.Fatalf("failed scanning fn_demo_lib.pc: %v", err)
 	}
 
 	// 1. Assert exactly 1 query
@@ -117,14 +117,14 @@ func TestScannerFnD2uFixture(t *testing.T) {
 		t.Errorf("expected 0 tpcall, got %d", facts.TpCallCount)
 	}
 
-	// 3. Assert local function fn_is_d2u_active is defined
+	// 3. Assert local function fn_is_demo_active is defined
 	var foundFnDef bool
 	for _, fn := range facts.Functions {
-		if fn.Name == "fn_is_d2u_active" {
+		if fn.Name == "fn_is_demo_active" {
 			foundFnDef = true
 		}
 	}
 	if !foundFnDef {
-		t.Errorf("expected local function fn_is_d2u_active to be defined")
+		t.Errorf("expected local function fn_is_demo_active to be defined")
 	}
 }

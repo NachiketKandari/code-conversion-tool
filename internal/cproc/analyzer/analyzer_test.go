@@ -10,7 +10,7 @@ import (
 )
 
 func TestAnalyzeNavFixture(t *testing.T) {
-	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "SVC_MF_NAV_LIST.pc")
+	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "SVC_DEMO_LIST.pc")
 	rep, err := AnalyzeFile(pcPath, DefaultOptions())
 	if err != nil {
 		t.Fatalf("AnalyzeFile failed: %v", err)
@@ -25,8 +25,8 @@ func TestAnalyzeNavFixture(t *testing.T) {
 	if rep.FnExternalCount != 3 {
 		t.Errorf("expected 3 external functions, got %d (%v)", rep.FnExternalCount, rep.ExternalFns)
 	}
-	// chk_sssn: unresolved, non-conversion name => complex +10.
-	// fn_is_d2u_active: unresolved in single-file mode, non-conversion name => complex +10.
+	// chk_session: unresolved, non-conversion name => complex +10.
+	// fn_is_demo_active: unresolved in single-file mode, non-conversion name => complex +10.
 	// fn_long_to_int: unresolved but conversion-shaped name (_to_) => simple +5.
 	// Score = 7 queries + (10 + 10 + 5) = 32.
 	if rep.ComplexityScore != 32 {
@@ -39,8 +39,8 @@ func TestAnalyzeNavFixture(t *testing.T) {
 	if fn := byName["fn_long_to_int"]; fn == nil || fn.Class != ExtSimple || fn.Weight != 5 {
 		t.Errorf("expected fn_long_to_int to be simple +5, got %+v", fn)
 	}
-	if fn := byName["chk_sssn"]; fn == nil || fn.Class != ExtComplex || fn.Weight != 10 {
-		t.Errorf("expected chk_sssn to be complex +10, got %+v", fn)
+	if fn := byName["chk_session"]; fn == nil || fn.Class != ExtComplex || fn.Weight != 10 {
+		t.Errorf("expected chk_session to be complex +10, got %+v", fn)
 	}
 }
 
@@ -53,29 +53,29 @@ func TestAnalyzeDirResolvesExternalFns(t *testing.T) {
 
 	var nav *Report
 	for _, r := range reports {
-		if strings.HasSuffix(r.File, "SVC_MF_NAV_LIST.pc") {
+		if strings.HasSuffix(r.File, "SVC_DEMO_LIST.pc") {
 			nav = r
 		}
 	}
 	if nav == nil {
-		t.Fatalf("SVC_MF_NAV_LIST.pc report not found")
+		t.Fatalf("SVC_DEMO_LIST.pc report not found")
 	}
 
 	byName := externalByName(nav)
-	// fn_is_d2u_active resolves to fn_d2u_mf.pc, whose defining body carries an
+	// fn_is_demo_active resolves to fn_demo_lib.pc, whose defining body carries an
 	// EXEC SQL fetch => complex +10.
-	fn := byName["fn_is_d2u_active"]
+	fn := byName["fn_is_demo_active"]
 	if fn == nil {
-		t.Fatalf("expected fn_is_d2u_active among external fns, got %v", nav.ExternalFns)
+		t.Fatalf("expected fn_is_demo_active among external fns, got %v", nav.ExternalFns)
 	}
 	if !fn.Resolved {
-		t.Errorf("expected fn_is_d2u_active to be resolved via the corpus")
+		t.Errorf("expected fn_is_demo_active to be resolved via the corpus")
 	}
 	if !fn.HasSQL || fn.Class != ExtComplex || fn.Weight != 10 {
-		t.Errorf("expected resolved fn_is_d2u_active (SQL-bearing, complex +10), got %+v", fn)
+		t.Errorf("expected resolved fn_is_demo_active (SQL-bearing, complex +10), got %+v", fn)
 	}
-	if !strings.HasSuffix(fn.DefinedIn, "fn_d2u_mf.pc") {
-		t.Errorf("expected fn_is_d2u_active defined in fn_d2u_mf.pc, got %s", fn.DefinedIn)
+	if !strings.HasSuffix(fn.DefinedIn, "fn_demo_lib.pc") {
+		t.Errorf("expected fn_is_demo_active defined in fn_demo_lib.pc, got %s", fn.DefinedIn)
 	}
 	// Corpus resolution must not change the fixture score: 7 + (10 + 10 + 5) = 32.
 	if nav.ComplexityScore != 32 {
@@ -144,8 +144,8 @@ func externalByName(rep *Report) map[string]*ExternalFn {
 	return m
 }
 
-func TestAnalyzeFnD2uFixture(t *testing.T) {
-	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "fn_d2u_mf.pc")
+func TestAnalyzeFnDemoFixture(t *testing.T) {
+	pcPath := filepath.Join("..", "..", "..", "testdata", "nav", "fn_demo_lib.pc")
 	rep, err := AnalyzeFile(pcPath, DefaultOptions())
 	if err != nil {
 		t.Fatalf("AnalyzeFile failed: %v", err)
@@ -186,8 +186,8 @@ func TestAnalyzeDirAndCSV(t *testing.T) {
 	if reports[0].ComplexityScore < reports[1].ComplexityScore {
 		t.Errorf("expected descending sort by complexity score")
 	}
-	if !strings.HasSuffix(reports[0].File, "SVC_MF_NAV_LIST.pc") {
-		t.Errorf("expected SVC_MF_NAV_LIST.pc to be ranked first, got %s", reports[0].File)
+	if !strings.HasSuffix(reports[0].File, "SVC_DEMO_LIST.pc") {
+		t.Errorf("expected SVC_DEMO_LIST.pc to be ranked first, got %s", reports[0].File)
 	}
 
 	// Test CSV export. The marks line leads the file; the tabular reader
@@ -238,8 +238,8 @@ func TestAnalyzeDirAndCSV(t *testing.T) {
 		t.Errorf("expected nav fixture num_lines 982, got %s", navRow[1])
 	}
 	for _, want := range []string{
-		"chk_sssn:complex:10",
-		"fn_is_d2u_active:complex:10",
+		"chk_session:complex:10",
+		"fn_is_demo_active:complex:10",
 		"fn_long_to_int:simple:5",
 	} {
 		if !strings.Contains(navRow[7], want) {
@@ -280,27 +280,27 @@ func TestLoadOptionsCSVAndRescore(t *testing.T) {
 	if opts.Marks != DefaultMarks() {
 		t.Errorf("round-tripped marks %v, want defaults %v", opts.Marks, DefaultMarks())
 	}
-	if opts.FnWeights["chk_sssn"] != 10 || opts.FnWeights["fn_is_d2u_active"] != 10 || opts.FnWeights["fn_long_to_int"] != 5 {
+	if opts.FnWeights["chk_session"] != 10 || opts.FnWeights["fn_is_demo_active"] != 10 || opts.FnWeights["fn_long_to_int"] != 5 {
 		t.Errorf("unexpected round-tripped weights: %v", opts.FnWeights)
 	}
 
 	// 3. Per-fn edit (drop the session check from scoring) and re-score.
-	edited := strings.Replace(buf.String(), "chk_sssn:complex:10", "chk_sssn:complex:0", 1)
+	edited := strings.Replace(buf.String(), "chk_session:complex:10", "chk_session:complex:0", 1)
 	opts, err = LoadOptionsCSV(writeTemp(t, edited))
 	if err != nil {
 		t.Fatalf("LoadOptionsCSV(edited) failed: %v", err)
 	}
 	nav := navReport(t, dirPath, opts)
 	if nav.ComplexityScore != 22 {
-		t.Errorf("expected re-scored complexity 22 (32 with chk_sssn weight 0), got %d", nav.ComplexityScore)
+		t.Errorf("expected re-scored complexity 22 (32 with chk_session weight 0), got %d", nav.ComplexityScore)
 	}
 	if nav.Complexity != "MEDIUM" {
 		t.Errorf("expected re-scored complexity tier MEDIUM, got %s", nav.Complexity)
 	}
-	if fn := externalByName(nav)["chk_sssn"]; fn == nil || fn.Weight != 0 {
-		t.Errorf("expected chk_sssn weight 0 after re-score, got %+v", fn)
+	if fn := externalByName(nav)["chk_session"]; fn == nil || fn.Weight != 0 {
+		t.Errorf("expected chk_session weight 0 after re-score, got %+v", fn)
 	}
-	// Counts stay factual: chk_sssn is still an external call, only its
+	// Counts stay factual: chk_session is still an external call, only its
 	// scoring weight changed.
 	if nav.FnExternalCount != 3 {
 		t.Errorf("fn_external_count must stay factual (3), got %d", nav.FnExternalCount)
@@ -364,7 +364,7 @@ func navReport(t *testing.T, dirPath string, opts Options) *Report {
 		t.Fatalf("AnalyzeDir with overrides failed: %v", err)
 	}
 	for _, r := range rescored {
-		if strings.HasSuffix(r.File, "SVC_MF_NAV_LIST.pc") {
+		if strings.HasSuffix(r.File, "SVC_DEMO_LIST.pc") {
 			return r
 		}
 	}

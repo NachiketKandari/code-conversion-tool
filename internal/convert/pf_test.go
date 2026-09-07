@@ -98,7 +98,7 @@ func TestConvertFragmentGate(t *testing.T) {
 	// SQL-free prompts (the query-replaced view), store contract included.
 	for i, req := range fake.Requests {
 		prompt := promptOf(t, req)
-		for _, frag := range []string{"DECLARE cur_demo", "FROM MF_NAVS_HIST", "INTO :sql_nav_date"} {
+		for _, frag := range []string{"DECLARE cur_demo", "FROM DEMO_PRICE_HIST", "INTO :sql_nav_date"} {
 			if strings.Contains(prompt, frag) {
 				t.Errorf("fragment prompt %d leaked raw SQL (%q)", i, frag)
 			}
@@ -138,8 +138,8 @@ func TestConvertTPCallPlaceholderGate(t *testing.T) {
 	}
 
 	// The run reports placeholders as a first-class count.
-	if len(res.Placeholders) != 1 || res.Placeholders[0] != "TPCallSvcMfNavDetail" {
-		t.Errorf("placeholders = %v, want [TPCallSvcMfNavDetail]", res.Placeholders)
+	if len(res.Placeholders) != 1 || res.Placeholders[0] != "TPCallSvcDemoDetail" {
+		t.Errorf("placeholders = %v, want [TPCallSvcDemoDetail]", res.Placeholders)
 	}
 	_, _, _, _, placeholders := opts.Ledger.Counts()
 	if placeholders != 1 {
@@ -154,10 +154,10 @@ func TestConvertTPCallPlaceholderGate(t *testing.T) {
 	}
 	phStr := string(ph)
 	for _, want := range []string{
-		"tuxgo:TODO tp:SVC_MF_NAV_DETAIL",
-		"// send: FML_COMP_CD, FML_MF_SCH_CD",
+		"tuxgo:TODO tp:SVC_DEMO_DETAIL",
+		"// send: FML_COMP_CD, FML_SCHEME_CD",
 		"// recv: FML_NAV_DATE, FML_NAV_NAV",
-		"func TPCallSvcMfNavDetail(send map[string]string) (recv map[string]string, err error)",
+		"func TPCallSvcDemoDetail(send map[string]string) (recv map[string]string, err error)",
 		"return nil, errPlaceholder",
 	} {
 		if !strings.Contains(phStr, want) {
@@ -201,7 +201,7 @@ func TestConvertTPCallPromptContract(t *testing.T) {
 	sawSection := 0
 	for _, req := range fake.Requests {
 		prompt := promptOf(t, req)
-		has := strings.Contains(prompt, "TPCallSvcMfNavDetail(send map[string]string) (recv map[string]string, error)")
+		has := strings.Contains(prompt, "TPCallSvcDemoDetail(send map[string]string) (recv map[string]string, error)")
 		if strings.Contains(prompt, "TpDetail") && has {
 			sawSection++
 		}

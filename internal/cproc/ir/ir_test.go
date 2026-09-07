@@ -13,7 +13,7 @@ import (
 
 func navFile(t *testing.T) *File {
 	t.Helper()
-	f, err := ExtractFile(filepath.Join("..", "..", "..", "testdata", "nav", "SVC_MF_NAV_LIST.pc"))
+	f, err := ExtractFile(filepath.Join("..", "..", "..", "testdata", "nav", "SVC_DEMO_LIST.pc"))
 	if err != nil {
 		t.Fatalf("ExtractFile failed: %v", err)
 	}
@@ -23,10 +23,10 @@ func navFile(t *testing.T) *File {
 func TestExtractNavGolden(t *testing.T) {
 	f := navFile(t)
 
-	if f.Entry != "SVC_MF_NAV_LIST" {
+	if f.Entry != "SVC_DEMO_LIST" {
 		t.Errorf("entry = %q", f.Entry)
 	}
-	if len(f.Functions) != 1 || f.Functions[0] != "SVC_MF_NAV_LIST" {
+	if len(f.Functions) != 1 || f.Functions[0] != "SVC_DEMO_LIST" {
 		t.Errorf("functions = %v", f.Functions)
 	}
 
@@ -38,10 +38,10 @@ func TestExtractNavGolden(t *testing.T) {
 		rng    [2]int
 		quests []string
 	}{
-		{"if", "c_flag == 'H'", false, [2]int{180, 351}, []string{"q1", "cur_mf_nav_hist"}},
-		{"elseif", "c_flag == 'F'", false, [2]int{353, 578}, []string{"q3", "cur_mf_freed"}},
-		{"elseif", "c_flag == 'I'", false, [2]int{582, 808}, []string{"q5", "cur_mf_nav"}},
-		{"else", "", true, [2]int{811, 974}, []string{"cur_mf_nav_list"}},
+		{"if", "c_flag == 'H'", false, [2]int{180, 351}, []string{"q1", "cur_demo_hist"}},
+		{"elseif", "c_flag == 'F'", false, [2]int{353, 578}, []string{"q3", "cur_demo_featured"}},
+		{"elseif", "c_flag == 'I'", false, [2]int{582, 808}, []string{"q5", "cur_demo_insured"}},
+		{"else", "", true, [2]int{811, 974}, []string{"cur_demo_list"}},
 	}
 	if len(f.Conditions) != len(wantConds) {
 		t.Fatalf("got %d conditions, want %d", len(f.Conditions), len(wantConds))
@@ -74,7 +74,7 @@ func TestExtractNavGolden(t *testing.T) {
 		return found
 	}
 	// H branch: COMP_CD and SCH_CD required.
-	for _, field := range []string{"FML_COMP_CD", "FML_MF_SCH_CD"} {
+	for _, field := range []string{"FML_COMP_CD", "FML_SCHEME_CD"} {
 		ops := opsByField(f.Conditions[0].FmlOps, FmlGet, field)
 		if len(ops) != 1 || ops[0].Optional {
 			t.Errorf("H %s get = %+v, want one required op", field, ops)
@@ -85,12 +85,12 @@ func TestExtractNavGolden(t *testing.T) {
 		if ops := opsByField(f.Conditions[ci].FmlOps, FmlGet, "FML_COMP_CD"); len(ops) != 1 || !ops[0].Optional {
 			t.Errorf("branch %d FML_COMP_CD = %+v, want optional", ci, ops)
 		}
-		if ops := opsByField(f.Conditions[ci].FmlOps, FmlGet, "FML_MATCH_ACCNT"); len(ops) != 1 || ops[0].Optional {
-			t.Errorf("branch %d FML_MATCH_ACCNT = %+v, want required", ci, ops)
+		if ops := opsByField(f.Conditions[ci].FmlOps, FmlGet, "FML_ACCOUNT"); len(ops) != 1 || ops[0].Optional {
+			t.Errorf("branch %d FML_ACCOUNT = %+v, want required", ci, ops)
 		}
 	}
 	// F branch response set includes the freedom-specific fields.
-	for _, field := range []string{"FML_VLME", "FML_UPL_PRTFLO_NM"} {
+	for _, field := range []string{"FML_RATING", "FML_LABEL"} {
 		if ops := opsByField(f.Conditions[1].FmlOps, FmlAdd, field); len(ops) != 1 {
 			t.Errorf("F branch missing Fadd32 %s", field)
 		}
@@ -100,13 +100,13 @@ func TestExtractNavGolden(t *testing.T) {
 		t.Errorf("default FML_COMP_CD = %+v, want required", ops)
 	}
 	// Entry preamble: session reads dropped, flag read optional.
-	if ops := opsByField(f.FmlOps, FmlGet, "FML_USR_ID"); len(ops) != 1 || !ops[0].Dropped {
-		t.Errorf("preamble FML_USR_ID = %+v, want dropped", ops)
+	if ops := opsByField(f.FmlOps, FmlGet, "FML_USER_ID"); len(ops) != 1 || !ops[0].Dropped {
+		t.Errorf("preamble FML_USER_ID = %+v, want dropped", ops)
 	}
-	if ops := opsByField(f.FmlOps, FmlGet, "FML_SSSN_ID"); len(ops) != 1 || !ops[0].Dropped {
-		t.Errorf("preamble FML_SSSN_ID = %+v, want dropped", ops)
+	if ops := opsByField(f.FmlOps, FmlGet, "FML_SESSION_ID"); len(ops) != 1 || !ops[0].Dropped {
+		t.Errorf("preamble FML_SESSION_ID = %+v, want dropped", ops)
 	}
-	if ops := opsByField(f.FmlOps, FmlGet, "FML_MF_GROWTH_FLG"); len(ops) != 1 || ops[0].Target != "c_flag" || !ops[0].Optional {
+	if ops := opsByField(f.FmlOps, FmlGet, "FML_MODE_FLG"); len(ops) != 1 || ops[0].Target != "c_flag" || !ops[0].Optional {
 		t.Errorf("preamble flag read = %+v, want optional target c_flag", ops)
 	}
 
@@ -131,22 +131,22 @@ func TestExtractNavGolden(t *testing.T) {
 		t.Errorf("q1 tables = %v", q1.Tables)
 	}
 
-	// cur_mf_nav_hist — flattened cursor, 4 binds, 6-col row shape.
-	q2 := byID["cur_mf_nav_hist"]
+	// cur_demo_hist — flattened cursor, 4 binds, 6-col row shape.
+	q2 := byID["cur_demo_hist"]
 	if q2 == nil || !q2.CursorFlattened || q2.Type != QuerySelectMulti || q2.TemplateID != TemplateSelectMulti {
-		t.Fatalf("cur_mf_nav_hist = %+v", q2)
+		t.Fatalf("cur_demo_hist = %+v", q2)
 	}
-	if want := []string{"sql_mf_nav_comp_cd", "sql_mf_nav_sch_cd", "c_from_date", "c_to_date"}; !reflect.DeepEqual(q2.Binds, want) {
-		t.Errorf("cur_mf_nav_hist binds = %v", q2.Binds)
+	if want := []string{"sql_demo_comp_cd", "sql_demo_scheme_cd", "c_from_date", "c_to_date"}; !reflect.DeepEqual(q2.Binds, want) {
+		t.Errorf("cur_demo_hist binds = %v", q2.Binds)
 	}
 	if q2.BindArity != 4 || q2.StartLine != 232 || q2.EndLine != 343 {
-		t.Errorf("cur_mf_nav_hist arity/extent = %d [%d,%d]", q2.BindArity, q2.StartLine, q2.EndLine)
+		t.Errorf("cur_demo_hist arity/extent = %d [%d,%d]", q2.BindArity, q2.StartLine, q2.EndLine)
 	}
-	if q2.OrderBy != "MF_NAV_HIST_DATE desc" {
-		t.Errorf("cur_mf_nav_hist order by = %q", q2.OrderBy)
+	if q2.OrderBy != "DEMO_HIST_DATE desc" {
+		t.Errorf("cur_demo_hist order by = %q", q2.OrderBy)
 	}
-	if !reflect.DeepEqual(q2.Tables, []string{"MF_COMPANIES", "MF_SCHEME_MASTER", "MF_NAVS_HIST"}) {
-		t.Errorf("cur_mf_nav_hist tables = %v", q2.Tables)
+	if !reflect.DeepEqual(q2.Tables, []string{"DEMO_COMPANY", "DEMO_SCHEME", "DEMO_PRICE_HIST"}) {
+		t.Errorf("cur_demo_hist tables = %v", q2.Tables)
 	}
 
 	// q3 / q5 — the identical F/I COUNT dedup pair.
@@ -160,20 +160,20 @@ func TestExtractNavGolden(t *testing.T) {
 	if q5.DuplicateOf != q3.ID || q3.DuplicateOf != "" {
 		t.Errorf("duplicate link = q5→%q q3→%q", q5.DuplicateOf, q3.DuplicateOf)
 	}
-	if len(q3.Binds) != 1 || q3.Binds[0] != "ls_match_acc" {
-		t.Errorf("q3 binds = %v, want [ls_match_acc] (cnt_d2u is the INTO output)", q3.Binds)
+	if len(q3.Binds) != 1 || q3.Binds[0] != "ls_demo_acc" {
+		t.Errorf("q3 binds = %v, want [ls_demo_acc] (cnt_demo is the INTO output)", q3.Binds)
 	}
 	if len(f.UniqueQueries()) != 6 {
 		t.Errorf("unique queries = %d, want 6", len(f.UniqueQueries()))
 	}
 
-	// cur_mf_nav_list — the default-branch cursor, 1 bind, no ORDER BY.
-	q7 := byID["cur_mf_nav_list"]
-	if q7 == nil || len(q7.Binds) != 1 || q7.Binds[0] != "li_mf_comp_cd" || q7.OrderBy != "" {
-		t.Errorf("cur_mf_nav_list = binds %v orderby %q", q7.Binds, q7.OrderBy)
+	// cur_demo_list — the default-branch cursor, 1 bind, no ORDER BY.
+	q7 := byID["cur_demo_list"]
+	if q7 == nil || len(q7.Binds) != 1 || q7.Binds[0] != "li_demo_comp" || q7.OrderBy != "" {
+		t.Errorf("cur_demo_list = binds %v orderby %q", q7.Binds, q7.OrderBy)
 	}
 	if len(q7.RowShape) != 6 {
-		t.Errorf("cur_mf_nav_list row shape = %v", q7.RowShape)
+		t.Errorf("cur_demo_list row shape = %v", q7.RowShape)
 	}
 
 	// --- Host variables: local decls typed, header vars flagged. ---
@@ -181,19 +181,19 @@ func TestExtractNavGolden(t *testing.T) {
 	if v := hv["c_from_date"]; v == nil || v.CType != "varchar" || !v.InDeclareSection || !v.Nullable {
 		t.Errorf("c_from_date = %+v", v)
 	}
-	if v := hv["cnt_d2u"]; v == nil || v.CType != "int" || v.GoHint != "int" {
-		t.Errorf("cnt_d2u = %+v", v)
+	if v := hv["cnt_demo"]; v == nil || v.CType != "int" || v.GoHint != "int" {
+		t.Errorf("cnt_demo = %+v", v)
 	}
-	if v := hv["li_mf_comp_cd"]; v == nil || v.CType != "long" || v.GoHint != "int64" {
-		t.Errorf("li_mf_comp_cd = %+v, want long/int64 (a cast must not retype it)", v)
+	if v := hv["li_demo_comp"]; v == nil || v.CType != "long" || v.GoHint != "int64" {
+		t.Errorf("li_demo_comp = %+v, want long/int64 (a cast must not retype it)", v)
 	}
-	if v := hv["sql_mf_nav_comp_cd"]; v == nil || !v.FromHeader || v.CType != "" {
-		t.Errorf("sql_mf_nav_comp_cd = %+v, want untyped header var", v)
+	if v := hv["sql_demo_comp_cd"]; v == nil || !v.FromHeader || v.CType != "" {
+		t.Errorf("sql_demo_comp_cd = %+v, want untyped header var", v)
 	}
 
 	// --- External fns (file mode: nothing to resolve against). ---
 	ext := externalByName(f)
-	for _, name := range []string{"chk_sssn", "fn_is_d2u_active", "fn_long_to_int"} {
+	for _, name := range []string{"chk_session", "fn_is_demo_active", "fn_long_to_int"} {
 		if ext[name] == nil {
 			t.Fatalf("external fn %s missing", name)
 		}
@@ -201,8 +201,8 @@ func TestExtractNavGolden(t *testing.T) {
 			t.Errorf("%s must be unresolved in single-file mode", name)
 		}
 	}
-	if calls := ext["fn_is_d2u_active"].Callsites; !reflect.DeepEqual(calls, []int{419, 654}) {
-		t.Errorf("fn_is_d2u_active callsites = %v", calls)
+	if calls := ext["fn_is_demo_active"].Callsites; !reflect.DeepEqual(calls, []int{419, 654}) {
+		t.Errorf("fn_is_demo_active callsites = %v", calls)
 	}
 }
 
@@ -213,10 +213,10 @@ func TestExtractDirResolvesExternalFns(t *testing.T) {
 	}
 	var nav, fnFile *File
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, "SVC_MF_NAV_LIST.pc") {
+		if strings.HasSuffix(f.Path, "SVC_DEMO_LIST.pc") {
 			nav = f
 		}
-		if strings.HasSuffix(f.Path, "fn_d2u_mf.pc") {
+		if strings.HasSuffix(f.Path, "fn_demo_lib.pc") {
 			fnFile = f
 		}
 	}
@@ -225,19 +225,19 @@ func TestExtractDirResolvesExternalFns(t *testing.T) {
 	}
 
 	ext := externalByName(nav)
-	fn := ext["fn_is_d2u_active"]
-	if fn == nil || !fn.Resolved || !strings.HasSuffix(fn.DefinedIn, "fn_d2u_mf.pc") || !fn.HasSQL {
-		t.Fatalf("fn_is_d2u_active resolution = %+v", fn)
+	fn := ext["fn_is_demo_active"]
+	if fn == nil || !fn.Resolved || !strings.HasSuffix(fn.DefinedIn, "fn_demo_lib.pc") || !fn.HasSQL {
+		t.Fatalf("fn_is_demo_active resolution = %+v", fn)
 	}
 	// The defining file's query unit is referenced by ID (§4.2.9).
 	if len(fn.QueryIDs) != 1 || fnFile.Queries[0].ID != fn.QueryIDs[0] {
 		t.Errorf("query ids = %v, want the defining file's %q", fn.QueryIDs, fnFile.Queries[0].ID)
 	}
-	if fnFile.Queries[0].OwningFunction != "fn_is_d2u_active" {
+	if fnFile.Queries[0].OwningFunction != "fn_is_demo_active" {
 		t.Errorf("defining unit owner = %q", fnFile.Queries[0].OwningFunction)
 	}
 	// Unresolved externals stay flagged, never stubbed (§4.2.9.4).
-	for _, name := range []string{"chk_sssn", "fn_long_to_int"} {
+	for _, name := range []string{"chk_session", "fn_long_to_int"} {
 		if ext[name] == nil || ext[name].Resolved {
 			t.Errorf("%s must remain unresolved: %+v", name, ext[name])
 		}
@@ -248,7 +248,7 @@ func TestExtractDMLMarking(t *testing.T) {
 	src := `void SVC_DML_DEMO(void)
 {
     EXEC SQL INSERT INTO MF_LOG (ID, NOTE) VALUES (:seq, :note);
-    EXEC SQL UPDATE MF_NAVS SET NAV = :nav WHERE COMP_CD = :comp;
+    EXEC SQL UPDATE DEMO_PRICE SET NAV = :nav WHERE COMP_CD = :comp;
     EXEC SQL DELETE FROM MF_TEMP WHERE ID = :id;
 }
 `
@@ -265,7 +265,7 @@ func TestExtractDMLMarking(t *testing.T) {
 	}
 	wantTypes := []QueryType{QueryInsert, QueryUpdate, QueryDelete}
 	wantTemplates := []string{TemplateInsertTx, TemplateUpdateTx, TemplateDeleteTx}
-	wantTables := [][]string{{"MF_LOG"}, {"MF_NAVS"}, {"MF_TEMP"}}
+	wantTables := [][]string{{"MF_LOG"}, {"DEMO_PRICE"}, {"MF_TEMP"}}
 	for i, q := range f.Queries {
 		if q.Type != wantTypes[i] || q.TemplateID != wantTemplates[i] {
 			t.Errorf("query %d type/template = %s/%s, want %s/%s", i, q.Type, q.TemplateID, wantTypes[i], wantTemplates[i])

@@ -122,7 +122,7 @@ func buildCorpus(all []*scanner.SourceFacts) corpus {
 // classifyExternal applies the two-tier rule to one external call, using the
 // run's marks as tier weights. A per-fn override in opts.FnWeights (edited
 // into a previously written CSV and loaded via LoadOptionsCSV) is
-// authoritative: chk_sssn:complex:0 removes the session check from scoring
+// authoritative: chk_session:complex:0 removes the session check from scoring
 // without touching code.
 func classifyExternal(name string, c corpus, opts Options) ExternalFn {
 	var fn ExternalFn

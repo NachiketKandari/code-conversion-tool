@@ -148,8 +148,8 @@ func (s *Service) RowName(queryID, methodName string) string {
 // rowFields derives the row struct's fields from the FETCH-INTO host vars.
 // The db tag is the SELECT alias when the source SQL carries one
 // (`Query.Aliases`, position-aligned); otherwise the Pro*C table-header
-// convention names host vars after their columns (`sql_mf_nav_comp_cd` →
-// MF_NAV_COMP_CD), which is exactly what Oracle returns for unaliased
+// convention names host vars after their columns (`sql_demo_comp_cd` →
+// DEMO_COMP_CD), which is exactly what Oracle returns for unaliased
 // selects — so the tag is the uppercased, sql_-stripped host var.
 // Field formats are uniformly sql.NullString.
 func (s *Service) rowFields(q *ir.Query) ([]templates.FieldSpec, error) {

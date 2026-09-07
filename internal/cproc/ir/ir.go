@@ -66,7 +66,7 @@ const (
 // FmlOp records one FML buffer manipulation. Optional marks a field whose
 // legacy read is guarded by FNOTPRES (defaults applied — PRD §4.8.3).
 // Dropped marks session/error plumbing that never reaches generated models
-// (§4.8.4: FML_USR_ID/FML_SSSN_ID handled by middleware, FML_ERR_MSG becomes
+// (§4.8.4: FML_USER_ID/FML_SESSION_ID handled by middleware, FML_ERR_MSG becomes
 // the returned error). Buffer names the buffer variable the op targeted
 // (PF-4.2), resolvable against File.Buffers for its role.
 type FmlOp struct {

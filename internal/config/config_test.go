@@ -66,7 +66,7 @@ func TestConvertInputsAndLLMToggle(t *testing.T) {
 run:
   llm: false
 convert:
-  input: tux/SVC_MF_NAV_LIST.pc
+  input: tux/SVC_DEMO_LIST.pc
   mapping: nav.mapping.yaml
 `
 	path := filepath.Join(t.TempDir(), ".tuxgo.yaml")
@@ -80,7 +80,7 @@ convert:
 	if cfg.Run.LLM {
 		t.Error("run.llm: false must disable the generation seam")
 	}
-	if cfg.Convert.Input != "tux/SVC_MF_NAV_LIST.pc" || cfg.Convert.Mapping != "nav.mapping.yaml" {
+	if cfg.Convert.Input != "tux/SVC_DEMO_LIST.pc" || cfg.Convert.Mapping != "nav.mapping.yaml" {
 		t.Errorf("convert inputs = %+v", cfg.Convert)
 	}
 	// Absent sections still keep their defaults.

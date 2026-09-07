@@ -14,7 +14,7 @@ import (
 // navFacts returns the nav fixture's raw scanner facts.
 func navFacts(t *testing.T) *scanner.SourceFacts {
 	t.Helper()
-	facts, err := scanner.ScanFile(filepath.Join("..", "..", "..", "testdata", "nav", "SVC_MF_NAV_LIST.pc"))
+	facts, err := scanner.ScanFile(filepath.Join("..", "..", "..", "testdata", "nav", "SVC_DEMO_LIST.pc"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,13 +174,13 @@ func TestTPCallCorrelation(t *testing.T) {
 		t.Fatalf("tpcalls = %v, want exactly one correlated site", f.TPCalls)
 	}
 	tp := f.TPCalls[0]
-	if tp.Service != "SVC_MF_NAV_DETAIL" || tp.Ambiguous {
+	if tp.Service != "SVC_DEMO_DETAIL" || tp.Ambiguous {
 		t.Errorf("tpcall = %+v", tp)
 	}
 	if tp.SendBuffer != "sbuffer" || tp.RecvBuffer != "rbuffer" {
 		t.Errorf("buffer vars = %q/%q", tp.SendBuffer, tp.RecvBuffer)
 	}
-	if want := []string{"FML_COMP_CD", "FML_MF_SCH_CD"}; !reflect.DeepEqual(fmlFieldsOf(tp.SendFML), want) {
+	if want := []string{"FML_COMP_CD", "FML_SCHEME_CD"}; !reflect.DeepEqual(fmlFieldsOf(tp.SendFML), want) {
 		t.Errorf("send contract = %v, want %v", fmlFieldsOf(tp.SendFML), want)
 	}
 	if want := []string{"FML_NAV_DATE", "FML_NAV_NAV"}; !reflect.DeepEqual(fmlFieldsOf(tp.RecvFML), want) {
@@ -278,13 +278,13 @@ func TestFragmentIR(t *testing.T) {
 	if !q.CursorFlattened || q.Type != QuerySelectMulti || q.CursorName != "cur_demo" {
 		t.Errorf("cursor unit = %+v", q)
 	}
-	if !reflect.DeepEqual(q.Binds, []string{"li_mf_comp_cd"}) {
+	if !reflect.DeepEqual(q.Binds, []string{"li_demo_comp"}) {
 		t.Errorf("binds = %v", q.Binds)
 	}
 	if !reflect.DeepEqual(q.RowShape, []string{"sql_nav_date", "sql_nav_nav"}) {
 		t.Errorf("row shape = %v", q.RowShape)
 	}
-	if want := []string{"MF_NAVS_HIST"}; !reflect.DeepEqual(q.Tables, want) {
+	if want := []string{"DEMO_PRICE_HIST"}; !reflect.DeepEqual(q.Tables, want) {
 		t.Errorf("tables = %v, want %v", q.Tables, want)
 	}
 	if q.OwningFunction != "__fragment" {
@@ -354,10 +354,10 @@ Fadd32(Obuffer,FML_COUNT,(char*)&cnt,0);
 }
 
 // TestHelperFileNotFragment pins the detection boundary: a full helper file
-// with fn definitions (fn_d2u_mf.pc) is never auto-converted to a fragment —
+// with fn definitions (fn_demo_lib.pc) is never auto-converted to a fragment —
 // its units keep their real owning function (the corpus-resolution shape).
 func TestHelperFileNotFragment(t *testing.T) {
-	f, err := ExtractFile(filepath.Join("..", "..", "..", "testdata", "nav", "fn_d2u_mf.pc"))
+	f, err := ExtractFile(filepath.Join("..", "..", "..", "testdata", "nav", "fn_demo_lib.pc"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +367,7 @@ func TestHelperFileNotFragment(t *testing.T) {
 	if f.Entry != "" {
 		t.Errorf("helper entry = %q, want empty", f.Entry)
 	}
-	if len(f.Queries) != 1 || f.Queries[0].OwningFunction != "fn_is_d2u_active" {
+	if len(f.Queries) != 1 || f.Queries[0].OwningFunction != "fn_is_demo_active" {
 		t.Errorf("helper queries = %+v", f.Queries)
 	}
 }

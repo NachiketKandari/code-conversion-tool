@@ -80,7 +80,7 @@ buffers:                     # FML buffer-role registry (PF-4.1): variable names
 
 convert:                     # defaults for plan/convert so repeat runs need no CLI arguments
   input: ""                  # .pc/.pcf file or directory converted when the CLI passes no
-                             # positional target (e.g. tux/SVC_MF_NAV_LIST.pc)
+                             # positional target (e.g. tux/SVC_DEMO_LIST.pc)
   mapping: ""                # endpoint-mapping YAML used when -mapping is absent
                              # (e.g. nav.mapping.yaml); explicit CLI flags override both
 

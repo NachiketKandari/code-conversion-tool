@@ -16,6 +16,8 @@ tux/
 conversion_logs/
 /tuxgo
 .tuxgo.yaml
+# local real-corpus endpoint mapping (proprietary query names)
+nav.mapping.yaml
 .tuxgo/
 
 # Docs stay local (README/PRD/design notes are not part of the code commit)

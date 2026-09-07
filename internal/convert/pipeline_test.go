@@ -27,7 +27,7 @@ func convertFixture(t *testing.T) (Options, *llm.FakeServer) {
 	var main *ir.File
 	var fns []*ir.File
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, "SVC_MF_NAV_LIST.pc") {
+		if strings.HasSuffix(f.Path, "SVC_DEMO_LIST.pc") {
 			main = f
 		} else {
 			fns = append(fns, f)
@@ -45,13 +45,13 @@ func convertFixture(t *testing.T) (Options, *llm.FakeServer) {
 			{Condition: 4, Name: "NavList", Route: "/mfnavschemelist"},
 		},
 		DBMethods: map[string]plan.MethodPin{
-			"q1":                  {Name: "GetDateDetails", Row: "DateInfo"},
-			"cur_mf_nav_hist":     {Name: "GetNavHistory", Row: "NavHistoryDetail", Params: []string{"compCd:string", "schCd:string", "fromDate:time.Time", "toDate:time.Time"}},
-			"q3":                  {Name: "GetCount", Params: []string{"matchAccount:string"}},
-			"cur_mf_freed":        {Name: "GetSipFreedem", Row: "SipFreedemDetail"},
-			"cur_mf_nav":          {Name: "GetSipInsurance", Row: "SipInsuranceDetail"},
-			"cur_mf_nav_list":     {Name: "GetNavDetails", Params: []string{"compCd:string"}},
-			"fn_is_d2u_active:q1": {Name: "IsD2uActive", Row: "D2uActive"},
+			"q1":                   {Name: "GetDateDetails", Row: "DateInfo"},
+			"cur_demo_hist":        {Name: "GetNavHistory", Row: "NavHistoryDetail", Params: []string{"compCd:string", "schCd:string", "fromDate:time.Time", "toDate:time.Time"}},
+			"q3":                   {Name: "GetCount", Params: []string{"matchAccount:string"}},
+			"cur_demo_featured":    {Name: "GetSipFreedem", Row: "SipFreedemDetail"},
+			"cur_demo_insured":     {Name: "GetSipInsurance", Row: "SipInsuranceDetail"},
+			"cur_demo_list":        {Name: "GetNavDetails", Params: []string{"compCd:string"}},
+			"fn_is_demo_active:q1": {Name: "IsDemoActive", Row: "DemoActive"},
 		},
 	}
 	src, err := os.ReadFile(main.Path)
@@ -128,18 +128,18 @@ func TestConvertGateEndToEnd(t *testing.T) {
 		prompt := promptOf(t, req)
 		// The branch view legitimately keeps non-query EXEC constructs
 		// (COMMIT/ROLLBACK tx markers) and dead SQL inside C comments
-		// (the ver 2.2 block targets :i_cnt_d2us — never extracted); the
+		// (the demo commented block targets :i_cnt_demos — never extracted); the
 		// contract is that no LIVE query SQL leaks. Fragments are bind-
 		// specific raw lines from the extracted regions.
 		for _, frag := range []string{
-			"INTO   :cnt_d2u",                 // q3/q5 site
-			"FROM   DMM_D2U_MATCH_MPPNG_MSTR", // q3/q5 site
-			"DECLARE cur_mf_nav_hist CURSOR",  // cursor q2
-			"FROM   MF_NAVS_HIST",             // cursor q2
-			"into :c_from_date",               // q1 dual select
-			"DECLARE cur_mf_nav_list CURSOR",  // cursor q7
-			"DECLARE cur_mf_freed CURSOR",     // cursor q4
-			"DECLARE cur_mf_nav CURSOR",       // cursor q6
+			"INTO   :cnt_demo",                 // q3/q5 site
+			"FROM   DEMO_ACCOUNT_MAP",          // q3/q5 site
+			"DECLARE cur_demo_hist CURSOR",     // cursor q2
+			"FROM   DEMO_PRICE_HIST",           // cursor q2
+			"into :c_from_date",                // q1 dual select
+			"DECLARE cur_demo_list CURSOR",     // cursor q7
+			"DECLARE cur_demo_featured CURSOR", // cursor q4
+			"DECLARE cur_demo_insured CURSOR",  // cursor q6
 		} {
 			if strings.Contains(prompt, frag) {
 				t.Errorf("prompt %d leaked raw SQL (%q)", i, frag)

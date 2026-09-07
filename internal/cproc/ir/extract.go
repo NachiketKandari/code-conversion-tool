@@ -16,9 +16,9 @@ import (
 // the existing service's middleware or translated into Go error returns, so
 // they never become request/response fields.
 var droppedFmlFields = map[string]bool{
-	"FML_USR_ID":  true,
-	"FML_SSSN_ID": true,
-	"FML_ERR_MSG": true,
+	"FML_USER_ID":    true,
+	"FML_SESSION_ID": true,
+	"FML_ERR_MSG":    true,
 }
 
 var (

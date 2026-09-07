@@ -373,7 +373,7 @@ func methodName(m *Mapping, q *ir.Query) string {
 	}
 }
 
-// camel turns snake/dotted segments into exported CamelCase (DMM_D2U_X → DmmD2uX).
+// camel turns snake/dotted segments into exported CamelCase (DEMO_ACC_X → DemoAccX).
 func camel(s string) string {
 	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '.' || r == ' ' })
 	var sb strings.Builder

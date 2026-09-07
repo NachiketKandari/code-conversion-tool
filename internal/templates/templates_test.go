@@ -33,7 +33,7 @@ func TestRenderModelFile(t *testing.T) {
 			}},
 			{Name: "SipFreedemNavRequest", Fields: []FieldSpec{
 				{Name: "CompCode", Type: "string", JSONTag: "FML_COMP_CD", Binding: "required"},
-				{Name: "MatchAccount", Type: "string", JSONTag: "FML_MATCH_ACCNT", Binding: "required,matchaccount", ErrMsg: "Provide valid Match account"},
+				{Name: "MatchAccount", Type: "string", JSONTag: "FML_ACCOUNT", Binding: "required,matchaccount", ErrMsg: "Provide valid Match account"},
 			}},
 			{Name: "NavResponse", Fields: []FieldSpec{
 				{Name: "CompCode", Type: "string", JSONTag: "FML_COMP_CD", OmitEmpty: true},
@@ -50,7 +50,7 @@ func TestRenderModelFile(t *testing.T) {
 	for _, want := range []string{
 		`import "database/sql"`,
 		"CompCode string `json:\"FML_COMP_CD\" binding:\"required\"`",
-		"MatchAccount string `json:\"FML_MATCH_ACCNT\" binding:\"required,matchaccount\" error:\"Provide valid Match account\"`",
+		"MatchAccount string `json:\"FML_ACCOUNT\" binding:\"required,matchaccount\" error:\"Provide valid Match account\"`",
 		"CompCode string `json:\"FML_COMP_CD,omitempty\"`",
 		"CompCd sql.NullString `db:\"COMP_CD\"`",
 		"FromDate sql.NullTime `db:\"Date1\"`",
@@ -97,7 +97,7 @@ func TestRenderDBMethodSelectMulti(t *testing.T) {
 	out := render(t, DBMethodSelectMulti, DBMethodData{
 		Receiver: "g", StoreType: "store", Name: "GetNavDetails", CtxName: "c",
 		Params:  []ParamSpec{{Name: "compCd", Type: "string"}},
-		Query:   "SELECT MF_NAV_COMP_CD AS \"COMP_CD\" FROM MF_NAVS WHERE MF_COMP_CD = :1",
+		Query:   "SELECT DEMO_PRICE_COMP_CD AS \"COMP_CD\" FROM DEMO_PRICE WHERE MF_COMP_CD = :1",
 		VarName: "navDetails", RowType: "models.NavDetails", Multi: true,
 	})
 
@@ -135,7 +135,7 @@ func TestRenderDBMethodSelectSingle(t *testing.T) {
 	out = render(t, DBMethodSelectSingle, DBMethodData{
 		Receiver: "g", StoreType: "store", Name: "GetCount", CtxName: "ctx",
 		Params:  []ParamSpec{{Name: "matchAccount", Type: "string"}},
-		Query:   "SELECT COUNT(*) AS \"count\" FROM DMM_D2U_MATCH_MPPNG_MSTR WHERE DMM_MATCH_ACC = :1",
+		Query:   "SELECT COUNT(*) AS \"count\" FROM DEMO_ACCOUNT_MAP WHERE DEMO_MATCH_ACC = :1",
 		VarName: "count", Scalar: "int64",
 	})
 	for _, want := range []string{

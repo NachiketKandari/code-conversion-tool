@@ -24,7 +24,7 @@ func genNavFixture(t *testing.T) (*Service, *plan.Plan, []*ir.File) {
 	var main *ir.File
 	var fns []*ir.File
 	for _, f := range files {
-		if strings.HasSuffix(f.Path, "SVC_MF_NAV_LIST.pc") {
+		if strings.HasSuffix(f.Path, "SVC_DEMO_LIST.pc") {
 			main = f
 		} else {
 			fns = append(fns, f)
@@ -45,13 +45,13 @@ func genNavFixture(t *testing.T) (*Service, *plan.Plan, []*ir.File) {
 			{Condition: 4, Name: "NavList", Route: "/mfnavschemelist"},
 		},
 		DBMethods: map[string]plan.MethodPin{
-			"q1":                  {Name: "GetDateDetails", Row: "DateInfo"},
-			"cur_mf_nav_hist":     {Name: "GetNavHistory", Row: "NavHistoryDetail", Params: []string{"compCd:string", "schCd:string", "fromDate:time.Time", "toDate:time.Time"}},
-			"q3":                  {Name: "GetCount", Params: []string{"matchAccount:string"}},
-			"cur_mf_freed":        {Name: "GetSipFreedem", Row: "SipFreedemDetail"},
-			"cur_mf_nav":          {Name: "GetSipInsurance", Row: "SipInsuranceDetail"},
-			"cur_mf_nav_list":     {Name: "GetNavDetails", Params: []string{"compCd:string"}},
-			"fn_is_d2u_active:q1": {Name: "IsD2uActive", Row: "D2uActive"},
+			"q1":                   {Name: "GetDateDetails", Row: "DateInfo"},
+			"cur_demo_hist":        {Name: "GetNavHistory", Row: "NavHistoryDetail", Params: []string{"compCd:string", "schCd:string", "fromDate:time.Time", "toDate:time.Time"}},
+			"q3":                   {Name: "GetCount", Params: []string{"matchAccount:string"}},
+			"cur_demo_featured":    {Name: "GetSipFreedem", Row: "SipFreedemDetail"},
+			"cur_demo_insured":     {Name: "GetSipInsurance", Row: "SipInsuranceDetail"},
+			"cur_demo_list":        {Name: "GetNavDetails", Params: []string{"compCd:string"}},
+			"fn_is_demo_active:q1": {Name: "IsDemoActive", Row: "DemoActive"},
 		},
 	}
 	src, err := os.ReadFile(main.Path)
@@ -79,13 +79,13 @@ func TestGenModels(t *testing.T) {
 		"type NavHistoryRequest struct",
 		"CompCd string `json:\"FML_COMP_CD\" binding:\"required\"`",
 		"type NavListResponse struct",
-		"NavDate string `json:\"FML_MF_NAV_DATE,omitempty\"`",
+		"PriceDate", "json:\"FML_PRICE_DATE,omitempty\"",
 		"type NavDetails struct",
 		// gofmt column-aligns struct tags, so name and tag are asserted apart.
-		"MfNavCompCd", "MfSchDesc", "db:\"MF_NAV_COMP_CD\"", "db:\"MF_SCH_DESC\"",
+		"DemoCompCd", "DemoSchemeDesc", "db:\"DEMO_COMP_CD\"", "db:\"DEMO_SCHEME_DESC\"",
 		"type NavHistoryDetail struct",
 		"CFromDate", "CToDate", "db:\"C_FROM_DATE\"", "db:\"C_TO_DATE\"",
-		"type D2uActive struct",
+		"type DemoActive struct",
 		"CActiveFlag", "db:\"C_ACTIVE_FLAG\"",
 		"import \"database/sql\"",
 	} {
@@ -111,7 +111,7 @@ func TestGenDBMethodsAndInterface(t *testing.T) {
 		"func (g *store) GetNavHistory(c context.Context, compCd string, schCd string, fromDate time.Time, toDate time.Time) ([]*models.NavHistoryDetail, error)",
 		"func (g *store) GetCount(c context.Context, matchAccount string) (int64, error)",
 		"GetContext(c, &count, query, matchAccount)",
-		"func (g *store) IsD2uActive(c context.Context, cMtchAccnt string) (*models.D2uActive, error)",
+		"func (g *store) IsDemoActive(c context.Context, cMtchAccnt string) (*models.DemoActive, error)",
 		"\"database/sql\"",
 		"\"time\"",
 		"mutual-fund-be/pkg/logger",
@@ -314,7 +314,7 @@ func goastInspect(path, iface string) ([]string, error) {
 // return.
 func TestGenControllerPromptContext(t *testing.T) {
 	s, p, _ := genNavFixture(t)
-	ctx, err := s.ControllerPromptContext("SipFreedem", p, []string{"GetCount", "IsD2uActive", "GetSipFreedem"})
+	ctx, err := s.ControllerPromptContext("SipFreedem", p, []string{"GetCount", "IsDemoActive", "GetSipFreedem"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestGenControllerPromptContext(t *testing.T) {
 		"type SipFreedemRequest struct {",
 		"type SipFreedemResponse struct {",
 		"type SipFreedemDetail struct {",
-		"type D2uActive struct {",
+		"type DemoActive struct {",
 	} {
 		if !strings.Contains(ctx, want) {
 			t.Errorf("prompt context missing %q:\n%s", want, ctx)

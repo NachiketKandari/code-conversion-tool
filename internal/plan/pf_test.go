@@ -55,10 +55,10 @@ func TestTPCallPlanUnits(t *testing.T) {
 		t.Fatalf("tpcall units = %d, want 1: %+v", len(tpUnits), tpUnits)
 	}
 	u := tpUnits[0]
-	if u.Name != "TPCallSvcMfNavDetail" {
-		t.Errorf("unit name = %q, want TPCallSvcMfNavDetail", u.Name)
+	if u.Name != "TPCallSvcDemoDetail" {
+		t.Errorf("unit name = %q, want TPCallSvcDemoDetail", u.Name)
 	}
-	if u.TP == nil || u.TP.Service != "SVC_MF_NAV_DETAIL" || u.TP.Ambiguous {
+	if u.TP == nil || u.TP.Service != "SVC_DEMO_DETAIL" || u.TP.Ambiguous {
 		t.Errorf("unit contract = %+v", u.TP)
 	}
 	if u.LLM {
@@ -105,7 +105,7 @@ func TestTPCallUnmappedIsRecordedSkip(t *testing.T) {
 	}
 	found := false
 	for _, s := range p.Skipped {
-		if s.QueryID == "tpcall:SVC_MF_NAV_DETAIL" {
+		if s.QueryID == "tpcall:SVC_DEMO_DETAIL" {
 			found = true
 		}
 	}
