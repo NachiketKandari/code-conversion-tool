@@ -244,6 +244,61 @@ func TestConvertConcurrentDBUnitsByteIdentical(t *testing.T) {
 	}
 }
 
+// TestConvertSkipLLM: the deterministic-only mode (run.llm: false) generates
+// every deterministic artifact with zero LLM calls, marks pending controller
+// units skipped — never failed — and a later LLM-enabled resume converts
+// exactly those.
+func TestConvertSkipLLM(t *testing.T) {
+	opts, _ := convertFixture(t)
+	opts.SkipLLM = true
+	opts.Client = nil
+
+	res, err := Run(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.LLMCalls != 0 {
+		t.Errorf("skip-llm run made %d llm calls, want 0", res.LLMCalls)
+	}
+	for _, rel := range []string{
+		"pkg/services/nav/models/nav.go",
+		"pkg/services/nav/db/nav.go",
+		"pkg/services/nav/db/interface.go",
+		"pkg/services/nav/controller/interface.go",
+		"pkg/services/nav/handler/router_snippet.txt",
+	} {
+		if _, err := os.Stat(filepath.Join(opts.BaseDir, rel)); err != nil {
+			t.Errorf("missing artifact %s", rel)
+		}
+	}
+	if len(res.Skipped) != 3 {
+		t.Errorf("skipped = %v, want the 3 mapped endpoints", res.Skipped)
+	}
+	if len(res.Failed) != 0 {
+		t.Errorf("failed = %v, want none in skip-llm mode", res.Failed)
+	}
+	appended, failed, _, skipped := opts.Ledger.Counts()
+	if skipped != 3 || failed != 0 || appended < 10 {
+		t.Errorf("ledger = appended %d, failed %d, skipped %d", appended, failed, skipped)
+	}
+
+	// Resume with the LLM enabled: the skipped units convert, nothing re-runs.
+	opts2, _ := convertFixture(t)
+	// Share the first run's ledger by pointing opts2 at the same one.
+	opts2.Ledger = opts.Ledger
+	opts2.BaseDir = opts.BaseDir
+	res2, err := Run(context.Background(), opts2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.LLMCalls != 3 {
+		t.Errorf("resume made %d llm calls, want 3 (only the skipped units)", res2.LLMCalls)
+	}
+	if len(res2.Skipped) != 0 || len(res2.Failed) != 0 {
+		t.Errorf("resume skipped %v, failed %v, want none", res2.Skipped, res2.Failed)
+	}
+}
+
 func promptOf(t *testing.T, req map[string]any) string {
 	t.Helper()
 	msgs, ok := req["messages"].([]any)

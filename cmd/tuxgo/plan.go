@@ -25,7 +25,7 @@ import (
 func runPlan(ctx context.Context, args []string) error {
 	log := telemetry.Log(ctx)
 	fs := flag.NewFlagSet("plan", flag.ContinueOnError)
-	mappingPath := fs.String("mapping", "", "User mapping YAML: service identity + which conditions become endpoints (required — the tool never invents endpoints)")
+	mappingPath := fs.String("mapping", "", "User mapping YAML: service identity + which conditions become endpoints (default: convert.mapping from config)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
 	ledgerDir := fs.String("ledger", "", "Ledger directory for plan.json/plan.md (default: paths.ledger from config)")
 
@@ -33,19 +33,22 @@ func runPlan(ctx context.Context, args []string) error {
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
-	if len(positional) == 0 {
-		return fmt.Errorf("must provide a .pc/.pcf file or directory to plan")
-	}
-	if *mappingPath == "" {
-		return fmt.Errorf("must provide -mapping <yaml> — endpoints are user-specified (PRD §4.2.8)")
-	}
-	target := positional[0]
 
 	cfg, cfgSource, err := loadRunConfig(*configPath)
 	if err != nil {
 		return err
 	}
 	logConfigRouting(ctx, cfg, cfgSource)
+
+	target, err := resolveInput(positional, cfg)
+	if err != nil {
+		return err
+	}
+	mappingResolved, err := resolveMapping(*mappingPath, cfg)
+	if err != nil {
+		return err
+	}
+	*mappingPath = mappingResolved
 
 	mapping, err := plan.LoadMapping(*mappingPath)
 	if err != nil {

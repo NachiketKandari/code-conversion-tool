@@ -44,6 +44,13 @@ type Options struct {
 	MaxRetries int
 	Audit      *audit.Recorder // per-run audit folder (§4.7); nil = skip
 	Workers    int             // DB-unit render pool size (concurrency.workers); <1 → 1
+	// SkipLLM is the deterministic-only mode (run.llm: false): pending
+	// controller units are marked skipped (never failed) so a later
+	// LLM-enabled run resumes them.
+	SkipLLM bool
+	// WithGorm renders the store with the legacy *gorm.DB handle alongside
+	// sqlx (db.withGorm); default is the plain sqlx-only store.
+	WithGorm bool
 }
 
 // Result summarizes one convert run.
@@ -52,6 +59,7 @@ type Result struct {
 	LLMCalls int
 	Blocked  []string
 	Failed   []string
+	Skipped  []string
 	TierB    *validate.Result
 }
 
@@ -61,7 +69,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Plan == nil || opts.Main == nil || opts.Ledger == nil || opts.Validator == nil {
 		return nil, fmt.Errorf("convert: plan, main IR, ledger and validator are required")
 	}
-	svc, err := gen.NewService(gen.Options{Plan: opts.Plan, Main: opts.Main, FnFiles: opts.FnFiles})
+	svc, err := gen.NewService(gen.Options{Plan: opts.Plan, Main: opts.Main, FnFiles: opts.FnFiles, WithGorm: opts.WithGorm})
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +182,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		if opts.Ledger.Get(u.ID, string(u.Kind), u.Name).Status == ledger.StatusAppended {
 			continue // resume: already converted
+		}
+		if opts.SkipLLM {
+			// Deterministic-only mode: leave controller bodies for a later
+			// LLM-enabled resume — visible, never a failure.
+			opts.Ledger.Set(u.ID, ledger.StatusSkipped, "llm disabled (run.llm: false)")
+			res.Skipped = append(res.Skipped, u.Name)
+			continue
 		}
 		if opts.Client == nil {
 			return nil, fmt.Errorf("convert: endpoint %s needs the LLM client but none is configured", u.Name)

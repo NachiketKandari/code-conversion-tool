@@ -31,27 +31,31 @@ import (
 func runConvert(ctx context.Context, args []string) error {
 	log := telemetry.Log(ctx)
 	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
-	mappingPath := fs.String("mapping", "", "User mapping YAML (required — endpoints are user-specified)")
+	mappingPath := fs.String("mapping", "", "User mapping YAML (default: convert.mapping from config)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
 	baseDir := fs.String("base", "", "Output base directory override (default: target module root when paths.mainGo resolves, else paths.staged)")
+	noLLM := fs.Bool("no-llm", false, "Deterministic-only run: skip controller bodies (overrides run.llm)")
 
 	flagArgs, positional := reorderArgs(args)
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
-	if len(positional) == 0 {
-		return fmt.Errorf("must provide a .pc/.pcf file or directory to convert")
-	}
-	if *mappingPath == "" {
-		return fmt.Errorf("must provide -mapping <yaml> — endpoints are user-specified (PRD §4.2.8)")
-	}
-	target := positional[0]
 
 	cfg, cfgSource, err := loadRunConfig(*configPath)
 	if err != nil {
 		return err
 	}
 	logConfigRouting(ctx, cfg, cfgSource)
+
+	target, err := resolveInput(positional, cfg)
+	if err != nil {
+		return err
+	}
+	mappingResolved, err := resolveMapping(*mappingPath, cfg)
+	if err != nil {
+		return err
+	}
+	*mappingPath = mappingResolved
 
 	mapping, err := plan.LoadMapping(*mappingPath)
 	if err != nil {
@@ -88,11 +92,20 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 	v := validate.New(validate.Options{MainGo: cfg.Paths.MainGo, Compile: cfg.ValidateCfg.Compile, RunSmoke: cfg.ValidateCfg.Run})
 
-	client, err := llm.NewFromConfig(ctx, cfg, "")
-	if err != nil {
-		// The client is only needed for pending controller units; a fully
-		// resumed run proceeds without it.
-		log.Warn("llm client unavailable — pending controller units will fail", "error", err)
+	llmEnabled := cfg.Run.LLM && !*noLLM
+	var client llm.Client
+	if llmEnabled {
+		c, cerr := llm.NewFromConfig(ctx, cfg, "")
+		if cerr != nil {
+			// The client is only needed for pending controller units; a fully
+			// resumed run proceeds without it.
+			log.Warn("llm client unavailable — pending controller units will fail", "error", cerr)
+			client = nil
+		} else {
+			client = c
+		}
+	} else {
+		log.Info("llm disabled — deterministic-only run, controller bodies will be skipped")
 		client = nil
 	}
 
@@ -107,6 +120,7 @@ func runConvert(ctx context.Context, args []string) error {
 		Client: client, Budget: b, BaseDir: base,
 		Ledger: led, Validator: v, MaxRetries: cfg.ValidateCfg.MaxRetries, Audit: rec,
 		Workers: cfg.Concurrency.Workers,
+		SkipLLM: !llmEnabled, WithGorm: cfg.DB.WithGorm,
 	})
 	if err != nil {
 		return err
@@ -139,6 +153,9 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 	for _, f := range res.Failed {
 		fmt.Println("  failed:", f)
+	}
+	for _, s := range res.Skipped {
+		fmt.Println("  skipped:", s)
 	}
 	for _, bl := range res.Blocked {
 		fmt.Println("  blocked:", bl)

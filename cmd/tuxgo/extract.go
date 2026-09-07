@@ -105,6 +105,30 @@ func loadRunConfig(explicit string) (*config.Config, string, error) {
 	return cfg, path, nil
 }
 
+// resolveInput picks the conversion target: the CLI positional wins, else
+// convert.input from the yaml, else an error naming both sources.
+func resolveInput(positional []string, cfg *config.Config) (string, error) {
+	if len(positional) > 0 {
+		return positional[0], nil
+	}
+	if cfg.Convert.Input != "" {
+		return cfg.Convert.Input, nil
+	}
+	return "", fmt.Errorf("no input target: pass a .pc/.pcf file or directory, or set convert.input in .tuxgo.yaml")
+}
+
+// resolveMapping picks the endpoint mapping: the -mapping flag wins, else
+// convert.mapping from the yaml, else an error naming both sources.
+func resolveMapping(flagValue string, cfg *config.Config) (string, error) {
+	if flagValue != "" {
+		return flagValue, nil
+	}
+	if cfg.Convert.Mapping != "" {
+		return cfg.Convert.Mapping, nil
+	}
+	return "", fmt.Errorf("must provide -mapping <yaml> or set convert.mapping in .tuxgo.yaml — endpoints are user-specified (PRD §4.2.8)")
+}
+
 // logConfigRouting proves the yaml routing seam end to end: which profile
 // the run routes to, its endpoint, and where the key came from — never the
 // key value itself.

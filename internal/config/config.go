@@ -41,6 +41,7 @@ func Default() *Config {
 			MaxPromptTokens:  12000,
 			MaxOutputTokens:  4000,
 			CharsPerToken:    4,
+			LLM:              true,
 		},
 		Models: []Model{
 			{
@@ -63,6 +64,7 @@ func Default() *Config {
 		Elision:     Elision{Mode: "safe"},
 		Concurrency: Concurrency{Workers: 1},
 		ValidateCfg: ValidateCfg{MaxRetries: 3, Compile: "auto"},
+		DB:          DB{WithGorm: false},
 		Paths:       DefaultPaths(),
 	}
 }
@@ -97,6 +99,8 @@ type Config struct {
 	Elision     Elision     `yaml:"elision"`
 	Concurrency Concurrency `yaml:"concurrency"`
 	ValidateCfg ValidateCfg `yaml:"validate"`
+	DB          DB          `yaml:"db"`
+	Convert     Convert     `yaml:"convert"`
 	Paths       Paths       `yaml:"paths"`
 }
 
@@ -111,6 +115,10 @@ type Run struct {
 	MaxPromptTokens  int     `yaml:"maxPromptTokens"`
 	MaxOutputTokens  int     `yaml:"maxOutputTokens"`
 	CharsPerToken    int     `yaml:"charsPerToken"`
+	// LLM gates the generation seam (default true). false = deterministic-only
+	// run: models/db/interfaces/handler/router generate, pending controller
+	// bodies are marked skipped (never failed) for a later LLM-enabled resume.
+	LLM bool `yaml:"llm"`
 }
 
 // Duration is a yaml time span ("120s", "2m") decoding into time.Duration.
@@ -224,6 +232,24 @@ type Elision struct {
 // Concurrency is the opt-in DB-unit worker count (pipeline-three-parts 2b).
 type Concurrency struct {
 	Workers int `yaml:"workers"`
+}
+
+// DB carries the generated DB-layer shape options.
+type DB struct {
+	// WithGorm makes the store carry the legacy *gorm.DB handle alongside
+	// sqlx (the nav-example variant: NewXStore(oracle, db)). Default false —
+	// the plain sqlx-only store (NewXStore(db)) is the standard shape.
+	WithGorm bool `yaml:"withGorm"`
+}
+
+// Convert carries the plan/convert commands' default inputs so repeat runs
+// need no CLI arguments; explicit CLI flags override these.
+type Convert struct {
+	// Input is the .pc/.pcf file or directory converted when the CLI passes
+	// no positional target.
+	Input string `yaml:"input"`
+	// Mapping is the user endpoint-mapping YAML used when -mapping is absent.
+	Mapping string `yaml:"mapping"`
 }
 
 // ValidateCfg configures the bounded gofmt/build/vet/test retry loop (G6)

@@ -13,8 +13,9 @@ import (
 )
 
 // genNavFixture builds the plan (the user mapping pins reference-quality
-// names) and the derived Service.
-func genNavFixture(t *testing.T) (*Service, *plan.Plan) {
+// names) and the derived Service. The fn files are returned so variants can
+// rebuild a Service (e.g. WithGorm) without re-extracting.
+func genNavFixture(t *testing.T) (*Service, *plan.Plan, []*ir.File) {
 	t.Helper()
 	files, err := ir.ExtractDir("../../testdata/nav")
 	if err != nil {
@@ -65,11 +66,11 @@ func genNavFixture(t *testing.T) (*Service, *plan.Plan) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s, p
+	return s, p, fns
 }
 
 func TestGenModels(t *testing.T) {
-	s, p := genNavFixture(t)
+	s, p, _ := genNavFixture(t)
 	models, err := s.ModelFile(p)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +100,7 @@ func TestGenModels(t *testing.T) {
 }
 
 func TestGenDBMethodsAndInterface(t *testing.T) {
-	s, p := genNavFixture(t)
+	s, p, fns := genNavFixture(t)
 	file, err := s.DBMethodsFile(p)
 	if err != nil {
 		t.Fatal(err)
@@ -131,17 +132,38 @@ func TestGenDBMethodsAndInterface(t *testing.T) {
 		"type NavStore interface",
 		"GetNavDetails(c context.Context, compCd string) ([]*models.NavDetails, error)",
 		"GetCount(c context.Context, matchAccount string) (int64, error)",
-		"func NewNavStore(oracle *gorm.DB, db *sqlx.DB) NavStore",
-		"oracle *gorm.DB",
+		"func NewNavStore(db *sqlx.DB) NavStore",
 	} {
 		if !strings.Contains(iface, want) {
 			t.Errorf("db interface missing %q\n%s", want, iface)
 		}
 	}
+	// Default shape is sqlx-only — the gorm handle is the opt-in variant.
+	if strings.Contains(iface, "gorm") {
+		t.Errorf("default db interface must be sqlx-only:\n%s", iface)
+	}
+
+	// The db.withGorm variant carries the legacy handle (nav-example shape).
+	g, err := NewService(Options{Plan: p, Main: s.Main, FnFiles: fns, WithGorm: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gormIface, err := g.DBInterface(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"func NewNavStore(oracle *gorm.DB, db *sqlx.DB) NavStore",
+		"oracle *gorm.DB",
+	} {
+		if !strings.Contains(gormIface, want) {
+			t.Errorf("gorm variant missing %q\n%s", want, gormIface)
+		}
+	}
 }
 
 func TestGenAccumulateDBInterface(t *testing.T) {
-	s, p := genNavFixture(t)
+	s, p, _ := genNavFixture(t)
 	path := filepath.Join(t.TempDir(), "db", "interface.go")
 	n := 0
 	for _, u := range p.Units {
@@ -177,7 +199,7 @@ func TestGenAccumulateDBInterface(t *testing.T) {
 }
 
 func TestGenControllerHandlerRouter(t *testing.T) {
-	s, p := genNavFixture(t)
+	s, p, _ := genNavFixture(t)
 
 	ctrl, err := s.ControllerInterface(p)
 	if err != nil {
@@ -242,7 +264,7 @@ func TestGenControllerHandlerRouter(t *testing.T) {
 // TestGenGateGoldenFiles is the Phase 5 deterministic-generation gate: every
 // artifact renders deterministically (byte-identical re-runs).
 func TestGenGateGoldenFiles(t *testing.T) {
-	s, p := genNavFixture(t)
+	s, p, _ := genNavFixture(t)
 	type artifact struct {
 		name string
 		fn   func() (string, error)
@@ -291,7 +313,7 @@ func goastInspect(path, iface string) ([]string, error) {
 // response structs, and only the row structs the endpoint's store calls
 // return.
 func TestGenControllerPromptContext(t *testing.T) {
-	s, p := genNavFixture(t)
+	s, p, _ := genNavFixture(t)
 	ctx, err := s.ControllerPromptContext("SipFreedem", p, []string{"GetCount", "IsD2uActive", "GetSipFreedem"})
 	if err != nil {
 		t.Fatal(err)

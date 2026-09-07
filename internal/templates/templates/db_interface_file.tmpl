@@ -27,5 +27,9 @@ type {{.IfaceName}} interface {
 }
 
 func {{.CtorName}}({{if .WithGorm}}oracle *gorm.DB, {{end}}db *sqlx.DB) {{.IfaceName}} {
+{{- if .WithGorm}}
 	return &{{.StoreType}}{oracle: oracle, db: db}
+{{- else}}
+	return &{{.StoreType}}{db: db}
+{{- end}}
 }

@@ -26,6 +26,10 @@ run:
   maxOutputTokens: 4000       # … 4k out
   charsPerToken: 4            # token-estimator ratio (chars/4 heuristic, §4.3) —
                               # tune per model without a code change
+  llm: true                   # false = deterministic-only run: models/db/interfaces/
+                              # handler/router generate; pending controller bodies are
+                              # marked skipped for a later LLM-enabled resume
+                              # (CLI -no-llm overrides for one run)
 
 models:                      # OpenAI-compatible profiles, same client seam (R1)
   - name: isec-vllm          # production generation endpoint (default)
@@ -61,6 +65,17 @@ elision:
 
 concurrency:
   workers: 1                 # opt-in parallel DB-unit generation; correctness never depends on it
+
+db:
+  withGorm: false            # false (default): the plain sqlx-only store — NewXStore(db *sqlx.DB).
+                             # true: the nav-example variant where the store also carries the legacy
+                             # *gorm.DB handle — NewXStore(oracle *gorm.DB, db *sqlx.DB)
+
+convert:                     # defaults for plan/convert so repeat runs need no CLI arguments
+  input: ""                  # .pc/.pcf file or directory converted when the CLI passes no
+                             # positional target (e.g. tux/SVC_MF_NAV_LIST.pc)
+  mapping: ""                # endpoint-mapping YAML used when -mapping is absent
+                             # (e.g. nav.mapping.yaml); explicit CLI flags override both
 
 validate:                    # gofmt → go build → go vet → go test loop (G6)
   maxRetries: 3              # bounded retries with trimmed errors fed back

@@ -117,7 +117,7 @@ func (s *Service) DBInterface(p *plan.Plan) (string, error) {
 		StoreType: "store",
 		IfaceName: s.If + "Store",
 		CtorName:  "New" + s.If + "Store",
-		WithGorm:  true,
+		WithGorm:  s.WithGorm,
 		ModelsPkg: s.ModelsPkg,
 	}
 	for _, u := range sortedUnits(p) {
@@ -163,7 +163,7 @@ func (s *Service) DBInterfaceSkeleton() (string, error) {
 		StoreType: "store",
 		IfaceName: s.If + "Store",
 		CtorName:  "New" + s.If + "Store",
-		WithGorm:  true,
+		WithGorm:  s.WithGorm,
 		ModelsPkg: s.ModelsPkg,
 	})
 }

@@ -21,6 +21,9 @@ type Options struct {
 	Plan    *plan.Plan
 	Main    *ir.File
 	FnFiles []*ir.File
+	// WithGorm renders the store with the legacy *gorm.DB handle alongside
+	// sqlx (db.withGorm); default is the plain sqlx-only store.
+	WithGorm bool
 }
 
 // Service bundles the derived naming context shared by all generators.
@@ -30,6 +33,7 @@ type Service struct {
 	ModelsPkg   string               // mutual-fund-be/pkg/services/nav/models
 	Module      string               // mutual-fund-be
 	If          string               // Nav — exported service name for interface names
+	WithGorm    bool                 // store carries the legacy gorm handle (db.withGorm)
 	structLower string               // navController / navHandler receiver base
 	queries     map[string]*ir.Query // namespaced ID → query (main + fn files)
 	hostVars    map[string]ir.HostVar
@@ -40,7 +44,7 @@ func NewService(o Options) (*Service, error) {
 	if o.Plan == nil || o.Main == nil {
 		return nil, fmt.Errorf("gen: plan and main IR are required")
 	}
-	s := &Service{Mapping: o.Plan.Mapping, Main: o.Main}
+	s := &Service{Mapping: o.Plan.Mapping, Main: o.Main, WithGorm: o.WithGorm}
 	s.ModelsPkg = s.Mapping.ImportPath("models")
 	s.Module = strings.SplitN(s.Mapping.Module, "/", 2)[0]
 	s.If = exportName(s.Mapping.Service)

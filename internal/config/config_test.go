@@ -52,8 +52,40 @@ func TestLoadExampleYAMLStrict(t *testing.T) {
 	if cfg.Concurrency.Workers != 1 || cfg.ValidateCfg.MaxRetries != 3 {
 		t.Errorf("defaults must survive partial yaml: %+v", cfg)
 	}
+	// New knobs default to the documented behavior: LLM on, sqlx-only store.
+	if !cfg.Run.LLM || cfg.DB.WithGorm {
+		t.Errorf("run.llm/db.withGorm defaults = %+v / %+v, want true/false", cfg.Run.LLM, cfg.DB.WithGorm)
+	}
 	if cfg.Paths.State != "conversion_logs/state" {
 		t.Errorf("paths.state = %q", cfg.Paths.State)
+	}
+}
+
+func TestConvertInputsAndLLMToggle(t *testing.T) {
+	yamlSrc := `
+run:
+  llm: false
+convert:
+  input: tux/SVC_MF_NAV_LIST.pc
+  mapping: nav.mapping.yaml
+`
+	path := filepath.Join(t.TempDir(), ".tuxgo.yaml")
+	if err := os.WriteFile(path, []byte(yamlSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Run.LLM {
+		t.Error("run.llm: false must disable the generation seam")
+	}
+	if cfg.Convert.Input != "tux/SVC_MF_NAV_LIST.pc" || cfg.Convert.Mapping != "nav.mapping.yaml" {
+		t.Errorf("convert inputs = %+v", cfg.Convert)
+	}
+	// Absent sections still keep their defaults.
+	if cfg.Concurrency.Workers != 1 || cfg.Paths.Staged != "conversion_logs/_staged" {
+		t.Errorf("defaults must survive partial yaml: %+v", cfg)
 	}
 }
 
