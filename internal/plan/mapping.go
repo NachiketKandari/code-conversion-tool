@@ -15,12 +15,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// MethodPin is the user's optional pin for one DB method: the method name
-// and, per bind, "name" or "name:Type" — reference-quality signatures
-// without an LLM. Unpinned methods fall back to deterministic naming.
+// MethodPin is the user's optional pin for one DB method: the method name,
+// per-bind "name" or "name:Type" parameters, and the result row struct name
+// — reference-quality signatures without an LLM. Unpinned aspects fall back
+// to deterministic naming.
 type MethodPin struct {
 	Name   string   `yaml:"name"`
 	Params []string `yaml:"params"`
+	Row    string   `yaml:"row"`
 }
 
 // Endpoint is one user-mapped condition: the IR condition inventory index

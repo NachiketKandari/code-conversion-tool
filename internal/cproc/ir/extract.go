@@ -28,6 +28,7 @@ var (
 	whereRe      = regexp.MustCompile(`(?i)\bWHERE\b|\bGROUP\b|\bHAVING\b|\bORDER\b|\bFOR UPDATE\b`)
 	orderByRe    = regexp.MustCompile(`(?i)\bORDER BY\b`)
 	cursorNameRe = regexp.MustCompile(`(?i)\bDECLARE\s+(\w+)\s+CURSOR\b`)
+	aliasRe      = regexp.MustCompile(`(?i)AS\s+"([A-Za-z0-9_]+)"`)
 )
 
 // ExtractFile scans one Pro*C file and builds its IR.
@@ -275,6 +276,7 @@ func cursorQuery(facts *scanner.SourceFacts, stmt *scanner.ExecSQLStatement, ord
 	}
 
 	q.Binds, q.BindArity = bindsOf(bindSource(body))
+	q.Aliases = aliasesOf(stmt.Raw)
 	return q
 }
 
@@ -300,6 +302,7 @@ func directQuery(stmt *scanner.ExecSQLStatement, ordinal int) *Query {
 	}
 	q.DedupKey = q.SQL
 	q.Binds, q.BindArity = bindsOf(bindSource(q.SQL))
+	q.Aliases = aliasesOf(stmt.Raw)
 	return q
 }
 
@@ -386,6 +389,17 @@ func intoList(sql string) []string {
 		if part != "" {
 			out = append(out, strings.TrimSpace(part))
 		}
+	}
+	return out
+}
+
+// aliasesOf extracts the SELECT list's `AS "X"` column aliases from the raw
+// SQL, in select order — position-aligned with the FETCH-INTO row shape so
+// the generated row models carry the alias as their db tag (§4.8.2).
+func aliasesOf(rawSQL string) []string {
+	var out []string
+	for _, m := range aliasRe.FindAllStringSubmatch(rawSQL, -1) {
+		out = append(out, m[1])
 	}
 	return out
 }

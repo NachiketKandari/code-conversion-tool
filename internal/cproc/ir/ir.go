@@ -88,15 +88,18 @@ type HostVar struct {
 
 // Query is one logical query unit. Cursor units are flattened
 // (DECLARE/OPEN/FETCH/CLOSE → one SELECT_MULTI unit, §4.8.2) and carry the
-// FETCH-INTO list as RowShape. Duplicate units (identical SQL in different
-// branches) stay in the IR — factual, one row per site — linked by
-// DedupKey/DuplicateOf; the plan level collapses them to one DB method
-// (§4.2.8.7).
+// FETCH-INTO list as RowShape. Aliases holds the SELECT list's `AS "X"`
+// column aliases from the raw SQL, position-aligned with RowShape for row
+// models (§4.8.2: the alias is the db tag). Duplicate units (identical SQL
+// in different branches) stay in the IR — factual, one row per site —
+// linked by DedupKey/DuplicateOf; the plan level collapses them to one DB
+// method (§4.2.8.7).
 type Query struct {
 	ID              string    `json:"id"`
 	Type            QueryType `json:"type"`
 	TemplateID      string    `json:"template_id"`
 	SQL             string    `json:"sql"`
+	Aliases         []string  `json:"aliases,omitempty"`
 	StartLine       int       `json:"start_line"`
 	EndLine         int       `json:"end_line"`
 	OwningFunction  string    `json:"owning_function"`
