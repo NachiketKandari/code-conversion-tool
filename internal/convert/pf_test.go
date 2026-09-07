@@ -109,9 +109,9 @@ func TestConvertFragmentGate(t *testing.T) {
 	}
 
 	// Ledger lifecycle identical to a full file; no placeholders.
-	appended, failed, blocked, _, placeholders := opts.Ledger.Counts()
-	if appended < 6 || failed != 0 || blocked != 0 || placeholders != 0 {
-		t.Errorf("ledger = appended %d failed %d blocked %d placeholders %d", appended, failed, blocked, placeholders)
+	appended, failed, blocked, _, placeholders, deviated := opts.Ledger.Counts()
+	if appended < 6 || failed != 0 || blocked != 0 || placeholders != 0 || deviated != 0 {
+		t.Errorf("ledger = appended %d failed %d blocked %d placeholders %d deviated %d", appended, failed, blocked, placeholders, deviated)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestConvertTPCallPlaceholderGate(t *testing.T) {
 	if len(res.Placeholders) != 1 || res.Placeholders[0] != "TPCallSvcDemoDetail" {
 		t.Errorf("placeholders = %v, want [TPCallSvcDemoDetail]", res.Placeholders)
 	}
-	_, _, _, _, placeholders := opts.Ledger.Counts()
+	_, _, _, _, placeholders, _ := opts.Ledger.Counts()
 	if placeholders != 1 {
 		t.Errorf("ledger placeholders = %d, want 1", placeholders)
 	}
@@ -173,7 +173,7 @@ func TestConvertTPCallPlaceholderGate(t *testing.T) {
 	if len(res2.Placeholders) != 0 {
 		t.Errorf("resume re-rendered placeholders: %v", res2.Placeholders)
 	}
-	_, _, _, _, ph2 := opts.Ledger.Counts()
+	_, _, _, _, ph2, _ := opts.Ledger.Counts()
 	if ph2 != 1 {
 		t.Errorf("resume placeholders = %d, want 1", ph2)
 	}

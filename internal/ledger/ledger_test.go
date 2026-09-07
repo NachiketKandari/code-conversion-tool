@@ -33,9 +33,9 @@ func TestLedgerRoundTripAndResume(t *testing.T) {
 	if len(l2.Map) != 1 || l2.Map[0].Target != "pkg/services/nav/db/nav.go" {
 		t.Errorf("round-tripped map = %+v", l2.Map)
 	}
-	appended, failed, blocked, skipped, placeholders := l2.Counts()
-	if appended != 1 || failed != 0 || blocked != 0 || skipped != 0 || placeholders != 0 {
-		t.Errorf("counts = %d/%d/%d/%d/%d", appended, failed, blocked, skipped, placeholders)
+	appended, failed, blocked, skipped, placeholders, deviated := l2.Counts()
+	if appended != 1 || failed != 0 || blocked != 0 || skipped != 0 || placeholders != 0 || deviated != 0 {
+		t.Errorf("counts = %d/%d/%d/%d/%d/%d", appended, failed, blocked, skipped, placeholders, deviated)
 	}
 }
 

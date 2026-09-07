@@ -27,6 +27,10 @@ const (
 	// compilable placeholder (PF-4.6): a terminal state alongside blocked —
 	// the gap is known, greppable (tuxgo:TODO), and the build never breaks.
 	StatusPlaceholder UnitStatus = "placeholder"
+	// StatusDeviated marks a unit whose generated SQL drifted from the
+	// source Tux SQL (PF-6): flag-only — the artifact landed and compiles,
+	// the typed deviation is recorded for the reviewer; the run never fails.
+	StatusDeviated UnitStatus = "deviated"
 )
 
 // Entry is one unit's durable state.
@@ -128,8 +132,8 @@ func (l *Ledger) Save() error {
 
 // Counts summarizes the ledger for run summaries; placeholders report as a
 // first-class count (PF-4.6) — the queryable inventory of what the tool does
-// not know.
-func (l *Ledger) Counts() (appended, failed, blocked, skipped, placeholders int) {
+// not know — and deviated units as the SQL fidelity count (PF-6.4).
+func (l *Ledger) Counts() (appended, failed, blocked, skipped, placeholders, deviated int) {
 	for _, e := range l.Units {
 		switch e.Status {
 		case StatusAppended, StatusValidated:
@@ -142,6 +146,8 @@ func (l *Ledger) Counts() (appended, failed, blocked, skipped, placeholders int)
 			skipped++
 		case StatusPlaceholder:
 			placeholders++
+		case StatusDeviated:
+			deviated++
 		}
 	}
 	return

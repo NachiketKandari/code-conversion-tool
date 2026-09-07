@@ -62,6 +62,10 @@ type Result struct {
 	Skipped      []string
 	Placeholders []string
 	TierB        *validate.Result
+	// SQLDeviations lists the PF-6 fidelity findings: db methods whose
+	// generated SQL drifted from the source Tux SQL, and SQL-free artifacts
+	// that leaked SQL keywords. Flag-only — the run itself never fails.
+	SQLDeviations []string
 }
 
 // Run executes the plan. Deterministic units regenerate byte-identically on
@@ -123,6 +127,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	for _, u := range dbUnits {
 		opts.Ledger.Set(u.ID, ledger.StatusAppended, "", relPath(opts.BaseDir, dbFilePath))
 	}
+	checkDBFidelity(ctx, opts, res, svc, dbFilePath, dbUnits)
 
 	ifacePath, err := opts.absPath(opts.BaseDir, svc.Mapping.ImportPath("db")+"/interface.go")
 	if err != nil {
@@ -215,6 +220,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if err := renderTPCallPlaceholders(ctx, opts, res, svc); err != nil {
 		return nil, err
 	}
+	checkSQLFreeArtifacts(ctx, opts, res, dbFilePath)
 	if err := opts.Ledger.Save(); err != nil {
 		return nil, err
 	}

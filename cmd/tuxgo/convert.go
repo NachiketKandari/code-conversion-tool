@@ -141,9 +141,9 @@ func runConvert(ctx context.Context, args []string) error {
 
 	runMocks(ctx, base, p)
 
-	appended, failed, blocked, skipped, placeholders := led.Counts()
-	fmt.Printf("%s: %d files written under %s — units: %d appended, %d failed, %d blocked, %d skipped, %d placeholders, %d llm calls\n",
-		mapping.Service, len(res.Files), base, appended, failed, blocked, skipped, placeholders, res.LLMCalls)
+	appended, failed, blocked, skipped, placeholders, deviated := led.Counts()
+	fmt.Printf("%s: %d files written under %s — units: %d appended, %d failed, %d blocked, %d skipped, %d placeholders, %d sql deviations, %d llm calls\n",
+		mapping.Service, len(res.Files), base, appended, failed, blocked, skipped, placeholders, deviated, res.LLMCalls)
 	if degrade != "" {
 		fmt.Println("  note:", degrade)
 	}
@@ -157,6 +157,9 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 	for _, s := range res.Skipped {
 		fmt.Println("  skipped:", s)
+	}
+	for _, d := range res.SQLDeviations {
+		fmt.Println("  sql deviation:", d)
 	}
 	for _, bl := range res.Blocked {
 		fmt.Println("  blocked:", bl)
