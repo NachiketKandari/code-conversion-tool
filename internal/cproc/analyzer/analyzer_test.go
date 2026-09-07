@@ -213,6 +213,7 @@ func TestAnalyzeDirAndCSV(t *testing.T) {
 
 	expectedHeader := []string{
 		"file",
+		"num_lines",
 		"num_queries",
 		"has_tpcall",
 		"tpcall_count",
@@ -233,20 +234,23 @@ func TestAnalyzeDirAndCSV(t *testing.T) {
 	// The nav row (highest complexity, first) names every external call with
 	// class and weight, so the CSV is a self-contained tuning surface.
 	navRow := records[1]
+	if navRow[1] != "982" {
+		t.Errorf("expected nav fixture num_lines 982, got %s", navRow[1])
+	}
 	for _, want := range []string{
 		"chk_sssn:complex:10",
 		"fn_is_d2u_active:complex:10",
 		"fn_long_to_int:simple:5",
 	} {
-		if !strings.Contains(navRow[6], want) {
-			t.Errorf("external_fns cell missing %q: %q", want, navRow[6])
+		if !strings.Contains(navRow[7], want) {
+			t.Errorf("external_fns cell missing %q: %q", want, navRow[7])
 		}
 	}
-	if navRow[7] != "25" {
-		t.Errorf("expected external_weight 25, got %s", navRow[7])
+	if navRow[8] != "25" {
+		t.Errorf("expected external_weight 25, got %s", navRow[8])
 	}
-	if navRow[3] != "0" {
-		t.Errorf("expected tpcall_count 0, got %s", navRow[3])
+	if navRow[4] != "0" {
+		t.Errorf("expected tpcall_count 0, got %s", navRow[4])
 	}
 }
 

@@ -149,6 +149,7 @@ func classifyExternal(name string, c corpus, opts Options) ExternalFn {
 // Report holds the triage complexity analysis results for a Pro*C/Tuxedo file.
 type Report struct {
 	File            string
+	NumLines        int
 	NumQueries      int
 	HasTpCall       bool
 	TpCallCount     int
@@ -237,6 +238,7 @@ func analyzeFacts(facts *scanner.SourceFacts, c corpus, opts Options) *Report {
 
 	return &Report{
 		File:            facts.Path,
+		NumLines:        facts.NumLines,
 		NumQueries:      numQueries,
 		HasTpCall:       hasTpCall,
 		TpCallCount:     facts.TpCallCount,
@@ -334,6 +336,7 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 
 	header := []string{
 		"file",
+		"num_lines",
 		"num_queries",
 		"has_tpcall",
 		"tpcall_count",
@@ -358,6 +361,7 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 		}
 		row := []string{
 			r.File,
+			strconv.Itoa(r.NumLines),
 			strconv.Itoa(r.NumQueries),
 			strconv.FormatBool(r.HasTpCall),
 			strconv.Itoa(r.TpCallCount),

@@ -41,8 +41,15 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 	// "Ver X.Y comment ends") delimit *live* regions and must not hide code.
 	s.scan()
 
+	// Editor-style line count: a final line without a trailing newline counts.
+	numLines := bytes.Count(src, []byte{'\n'})
+	if len(src) > 0 && src[len(src)-1] != '\n' {
+		numLines++
+	}
+
 	return &SourceFacts{
 		Path:        path,
+		NumLines:    numLines,
 		Directives:  s.directives,
 		Functions:   s.functions,
 		Calls:       s.calls,

@@ -147,6 +147,7 @@ type VarDecl struct {
 // SourceFacts represents all structural facts extracted from a Pro*C file.
 type SourceFacts struct {
 	Path        string
+	NumLines    int
 	Directives  []Directive
 	Functions   []FunctionDef
 	Calls       []FunctionCall
