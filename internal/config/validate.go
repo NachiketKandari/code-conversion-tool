@@ -21,6 +21,7 @@ func (c *Config) Validate() error {
 		{"run.maxContextTokens", c.Run.MaxContextTokens},
 		{"run.maxPromptTokens", c.Run.MaxPromptTokens},
 		{"run.maxOutputTokens", c.Run.MaxOutputTokens},
+		{"run.charsPerToken", c.Run.CharsPerToken},
 	} {
 		if bad.v <= 0 {
 			return fmt.Errorf("%s must be positive, got %d", bad.name, bad.v)

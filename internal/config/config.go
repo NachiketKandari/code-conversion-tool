@@ -38,6 +38,7 @@ func Default() *Config {
 			MaxContextTokens: 16000,
 			MaxPromptTokens:  12000,
 			MaxOutputTokens:  4000,
+			CharsPerToken:    4,
 		},
 		Models: []Model{
 			{
@@ -98,12 +99,16 @@ type Config struct {
 }
 
 // Run carries the generation-wide budget and the default profile name.
+// CharsPerToken is the estimator ratio (§4.3): the budgeter approximates
+// tokens as characters/CharsPerToken — tune it per model without a code
+// change.
 type Run struct {
 	Profile          string  `yaml:"profile"`
 	Temperature      float64 `yaml:"temperature"`
 	MaxContextTokens int     `yaml:"maxContextTokens"`
 	MaxPromptTokens  int     `yaml:"maxPromptTokens"`
 	MaxOutputTokens  int     `yaml:"maxOutputTokens"`
+	CharsPerToken    int     `yaml:"charsPerToken"`
 }
 
 // Duration is a yaml time span ("120s", "2m") decoding into time.Duration.

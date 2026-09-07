@@ -35,6 +35,9 @@ func TestLoadExampleYAMLStrict(t *testing.T) {
 	if cfg.Run.Profile != "isec-vllm" || cfg.Run.MaxPromptTokens != 12000 {
 		t.Errorf("run section = %+v", cfg.Run)
 	}
+	if cfg.Run.CharsPerToken != 4 {
+		t.Errorf("run.charsPerToken = %d, want default 4", cfg.Run.CharsPerToken)
+	}
 	if len(cfg.Models) != 2 {
 		t.Fatalf("expected 2 profiles, got %d", len(cfg.Models))
 	}
@@ -124,6 +127,7 @@ func TestValidationErrors(t *testing.T) {
 		"unknown default profile": func(c *Config) { c.Run.Profile = "ghost" },
 		"negative budget":         func(c *Config) { c.Run.MaxPromptTokens = -1 },
 		"prompt over window":      func(c *Config) { c.Run.MaxPromptTokens = 32000 },
+		"zero chars per token":    func(c *Config) { c.Run.CharsPerToken = 0 },
 		"empty models":            func(c *Config) { c.Models = nil },
 		"duplicate profile": func(c *Config) {
 			c.Models[1].Name = c.Models[0].Name

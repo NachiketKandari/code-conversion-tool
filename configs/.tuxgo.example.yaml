@@ -24,6 +24,8 @@ run:
   maxContextTokens: 16000     # the model's context window — hard ceiling (R2)
   maxPromptTokens: 12000      # assembled-prompt budget: 12k in … (§4.3)
   maxOutputTokens: 4000       # … 4k out
+  charsPerToken: 4            # token-estimator ratio (chars/4 heuristic, §4.3) —
+                              # tune per model without a code change
 
 models:                      # OpenAI-compatible profiles, same client seam (R1)
   - name: isec-vllm          # production generation endpoint (default)
