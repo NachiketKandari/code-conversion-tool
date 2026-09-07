@@ -125,6 +125,16 @@ func (s *Service) ControllerPromptContext(endpoint string, p *plan.Plan, storeMe
 		sb.WriteString(indentFields(fields))
 		sb.WriteString("}\n")
 	}
+
+	// External interactions surface as compilable placeholders (PF-4.5): the
+	// body calls the stub instead of inventing an outbound call. Endpoints
+	// without tpcalls keep prompts unchanged.
+	if sigs := s.PlaceholderSignatures(c, p); len(sigs) > 0 {
+		sb.WriteString("\nexternal service call placeholders (call these instead of the legacy tpcall; each returns an error — handle it like a store error and return nil, err):\n")
+		for _, sig := range sigs {
+			sb.WriteString(sig + "\n")
+		}
+	}
 	return sb.String(), nil
 }
 

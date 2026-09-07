@@ -35,6 +35,7 @@ func runConvert(ctx context.Context, args []string) error {
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
 	baseDir := fs.String("base", "", "Output base directory override (default: target module root when paths.mainGo resolves, else paths.staged)")
 	noLLM := fs.Bool("no-llm", false, "Deterministic-only run: skip controller bodies (overrides run.llm)")
+	fragment := fs.Bool("fragment", false, "Force fragment mode on a single-file input (PF-3.1)")
 
 	flagArgs, positional := reorderArgs(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -61,7 +62,7 @@ func runConvert(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	files, main, err := extractPlanIR(target)
+	files, main, err := extractPlanIR(target, cfg, *fragment)
 	if err != nil {
 		return err
 	}
@@ -140,9 +141,9 @@ func runConvert(ctx context.Context, args []string) error {
 
 	runMocks(ctx, base, p)
 
-	appended, failed, blocked, _ := led.Counts()
-	fmt.Printf("%s: %d files written under %s — units: %d appended, %d failed, %d blocked, %d llm calls\n",
-		mapping.Service, len(res.Files), base, appended, failed, blocked, res.LLMCalls)
+	appended, failed, blocked, skipped, placeholders := led.Counts()
+	fmt.Printf("%s: %d files written under %s — units: %d appended, %d failed, %d blocked, %d skipped, %d placeholders, %d llm calls\n",
+		mapping.Service, len(res.Files), base, appended, failed, blocked, skipped, placeholders, res.LLMCalls)
 	if degrade != "" {
 		fmt.Println("  note:", degrade)
 	}

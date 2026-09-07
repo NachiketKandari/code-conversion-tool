@@ -22,23 +22,29 @@ const (
 	KindHandlerInterface    Kind = "handler_interface"
 	KindRouter              Kind = "router"
 	KindMocks               Kind = "mocks"
+	// KindTPCall is one tpcall site of a mapped endpoint (PF-4.4): it
+	// renders as a compilable placeholder stub carrying the send/recv FML
+	// contract — never invented outbound scaffolding (R8).
+	KindTPCall Kind = "tpcall"
 )
 
 // Unit is one step of the decomposition plan (plan-conversion §3): what to
 // generate, from which source, into which target file, with which template,
-// whether the LLM fills the body, and what must exist first.
+// whether the LLM fills the body, and what must exist first. TP carries the
+// tpcall site's full contract for KindTPCall units.
 type Unit struct {
-	ID            string   `json:"id"`
-	Kind          Kind     `json:"kind"`
-	Name          string   `json:"name"`
-	SourceFile    string   `json:"source_file,omitempty"`
-	SourceLines   string   `json:"source_lines,omitempty"`
-	QueryIDs      []string `json:"query_ids,omitempty"`
-	TargetPath    string   `json:"target_path"`
-	TemplateID    string   `json:"template_id,omitempty"`
-	LLM           bool     `json:"llm"`
-	TokenEstimate int      `json:"token_estimate"`
-	Deps          []string `json:"deps,omitempty"`
+	ID            string     `json:"id"`
+	Kind          Kind       `json:"kind"`
+	Name          string     `json:"name"`
+	SourceFile    string     `json:"source_file,omitempty"`
+	SourceLines   string     `json:"source_lines,omitempty"`
+	QueryIDs      []string   `json:"query_ids,omitempty"`
+	TargetPath    string     `json:"target_path"`
+	TemplateID    string     `json:"template_id,omitempty"`
+	LLM           bool       `json:"llm"`
+	TokenEstimate int        `json:"token_estimate"`
+	Deps          []string   `json:"deps,omitempty"`
+	TP            *ir.TPCall `json:"tp,omitempty"`
 }
 
 // Skipped is an IR unit deliberately not converted — a query belonging only
@@ -263,6 +269,50 @@ func Build(opts Options) (*Plan, error) {
 		TemplateID: "controller_interface_file",
 		Deps:       ctrlIDs,
 	})
+
+	// TPCall units — one per call site under the owning endpoint (PF-4.4).
+	// Sites outside every mapped condition are recorded skips (§4.2.8: only
+	// mapped conditions convert).
+	tpcallContract := func(tp *ir.TPCall) string {
+		var sb strings.Builder
+		for _, op := range tp.SendFML {
+			fmt.Fprintf(&sb, "send %s %s\n", op.Field, op.Target)
+		}
+		for _, op := range tp.RecvFML {
+			fmt.Fprintf(&sb, "recv %s %s\n", op.Field, op.Target)
+		}
+		return sb.String()
+	}
+	tpNameSeen := map[string]int{}
+	for i := range opts.Main.TPCalls {
+		tp := &opts.Main.TPCalls[i]
+		owner := ""
+		for _, e := range m.Endpoints {
+			if c, err := cond(e); err == nil && tp.StartLine >= c.StartLine && tp.StartLine <= c.EndLine {
+				owner = e.Name
+				break
+			}
+		}
+		if owner == "" {
+			p.Skipped = append(p.Skipped, Skipped{QueryID: "tpcall:" + tp.Service, Reason: "belongs only to unmapped conditions"})
+			continue
+		}
+		name := "TPCall" + camel(tp.Service)
+		tpNameSeen[name]++
+		if n := tpNameSeen[name]; n > 1 {
+			name = fmt.Sprintf("%s%d", name, n)
+		}
+		id := fmt.Sprintf("u%02d", len(p.Units)+1)
+		add(Unit{
+			ID: id, Kind: KindTPCall, Name: name,
+			SourceFile: opts.Main.Path, SourceLines: lineSpan(tp.StartLine, tp.EndLine),
+			TargetPath: m.ImportPath("controller") + "/tpcall_placeholders.go",
+			TemplateID: "tpcall_placeholder", LLM: false,
+			TokenEstimate: opts.Budget.Count(tpcallContract(tp)),
+			Deps:          []string{ctrlIfaceID},
+			TP:            tp,
+		})
+	}
 
 	handlerIDs := []string{}
 	for _, e := range m.Endpoints {

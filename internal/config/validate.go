@@ -107,5 +107,16 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s must not be empty", p.name)
 		}
 	}
+
+	// Buffer-role registry (PF-4.1): roles are a fixed vocabulary — a typo
+	// must fail at load, never degrade silently mid-run.
+	for name, role := range c.Buffers.Roles {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("buffers.roles: buffer name must not be empty")
+		}
+		if !BufferRoleNames[role] {
+			return fmt.Errorf("buffers.roles[%q]: unknown role %q (want input, output, send or recv)", name, role)
+		}
+	}
 	return nil
 }

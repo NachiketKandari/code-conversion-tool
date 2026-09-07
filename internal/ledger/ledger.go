@@ -23,6 +23,10 @@ const (
 	StatusFailed    UnitStatus = "failed"
 	StatusBlocked   UnitStatus = "blocked"
 	StatusSkipped   UnitStatus = "skipped"
+	// StatusPlaceholder marks an unresolved construct rendered as a
+	// compilable placeholder (PF-4.6): a terminal state alongside blocked —
+	// the gap is known, greppable (tuxgo:TODO), and the build never breaks.
+	StatusPlaceholder UnitStatus = "placeholder"
 )
 
 // Entry is one unit's durable state.
@@ -122,8 +126,10 @@ func (l *Ledger) Save() error {
 	return nil
 }
 
-// Counts summarizes the ledger for run summaries.
-func (l *Ledger) Counts() (appended, failed, blocked, skipped int) {
+// Counts summarizes the ledger for run summaries; placeholders report as a
+// first-class count (PF-4.6) — the queryable inventory of what the tool does
+// not know.
+func (l *Ledger) Counts() (appended, failed, blocked, skipped, placeholders int) {
 	for _, e := range l.Units {
 		switch e.Status {
 		case StatusAppended, StatusValidated:
@@ -134,6 +140,8 @@ func (l *Ledger) Counts() (appended, failed, blocked, skipped int) {
 			blocked++
 		case StatusSkipped:
 			skipped++
+		case StatusPlaceholder:
+			placeholders++
 		}
 	}
 	return

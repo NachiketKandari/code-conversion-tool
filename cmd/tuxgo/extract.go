@@ -28,6 +28,7 @@ func runExtract(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("extract", flag.ContinueOnError)
 	outPath := fs.String("out", "", "Write the IR JSON to this path (single-file mode defaults to stdout)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
+	fragment := fs.Bool("fragment", false, "Force fragment mode on a single file (PF-3.1: detection is otherwise automatic)")
 
 	flagArgs, positional := reorderArgs(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -43,6 +44,7 @@ func runExtract(ctx context.Context, args []string) error {
 		return err
 	}
 	logConfigRouting(ctx, cfg, cfgSource)
+	irOpts := irOptions(cfg, *fragment)
 
 	fi, err := os.Stat(target)
 	if err != nil {
@@ -50,7 +52,7 @@ func runExtract(ctx context.Context, args []string) error {
 	}
 
 	if fi.IsDir() {
-		files, err := ir.ExtractDir(target)
+		files, err := ir.ExtractDirOpts(target, irOpts)
 		if err != nil {
 			return err
 		}
@@ -61,7 +63,7 @@ func runExtract(ctx context.Context, args []string) error {
 		return writeDirIR(ctx, cfg, files)
 	}
 
-	file, err := ir.ExtractFile(target)
+	file, err := ir.ExtractFileOpts(target, irOpts)
 	if err != nil {
 		return err
 	}
@@ -84,6 +86,12 @@ func runExtract(ctx context.Context, args []string) error {
 	}
 	log.Info("extraction complete", "file", file.Path, "queries", len(file.Queries), "unique_queries", len(file.UniqueQueries()), "conditions", len(file.Conditions))
 	return nil
+}
+
+// irOptions maps the run config onto extraction options (PF-4.1 buffer
+// registry, PF-3.1 forced fragment mode).
+func irOptions(cfg *config.Config, forceFragment bool) ir.Options {
+	return ir.Options{BufferRoles: cfg.Buffers.Roles, ForceFragment: forceFragment}
 }
 
 // loadRunConfig resolves the run configuration: explicit -config path, else

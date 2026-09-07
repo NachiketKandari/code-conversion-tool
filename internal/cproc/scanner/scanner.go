@@ -3,6 +3,7 @@ package scanner
 import (
 	"bytes"
 	"os"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -34,17 +35,36 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 		pos:  0,
 		line: 1,
 		col:  1,
+		// Sentinel states (PF-1.4 hardening): no function is pending or open
+		// and no brace is open until the scan says so — a file whose first
+		// closing brace precedes any definition must degrade to a recorded
+		// fact, never panic.
+		pendingFn:      -1,
+		curFn:          -1,
+		outerOpenBrace: -1,
 	}
 
 	// Tokenize and extract facts. Dead code is whatever sits inside standard C
 	// comments (block or line); version banner comments ("Ver X.Y added here",
 	// "Ver X.Y comment ends") delimit *live* regions and must not hide code.
+	// Every comment span is recorded (PF-1), and constructs the scanner cannot
+	// close become UnbalancedRegion facts (PF-1.4) instead of truncating.
 	s.scan()
 
 	// Editor-style line count: a final line without a trailing newline counts.
 	numLines := bytes.Count(src, []byte{'\n'})
 	if len(src) > 0 && src[len(src)-1] != '\n' {
 		numLines++
+	}
+
+	if s.braceDepth > 0 {
+		// Unclosed braces at EOF: the outermost open brace starts the
+		// unbalanced region (PF-1.4).
+		s.unbalanced = append(s.unbalanced, UnbalancedRegion{
+			Kind:      "braces",
+			StartLine: s.outerOpenBrace,
+			StartCol:  s.outerOpenBraceCol,
+		})
 	}
 
 	return &SourceFacts{
@@ -57,8 +77,90 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 		Queries:     s.queries,
 		Branches:    s.branches,
 		VarDecls:    s.varDecls,
+		Comments:    s.comments,
+		Unbalanced:  s.unbalanced,
 		TpCallCount: s.tpcallCount,
 	}, nil
+}
+
+// ScanFragment parses a lone code fragment (PF-3.2) — typically one branch
+// of an entry function copied into a .txt/.pc file. The fragment is wrapped
+// as the pseudo-function __fragment so the ordinary tokenizer applies with
+// entry-function assumptions dropped, then every line number is rebased to
+// the original fragment text; facts.Fragment marks the synthesis.
+func ScanFragment(src []byte, path string) (*SourceFacts, error) {
+	const wrapper = "void __fragment(void)\n{\n"
+	wrapped := make([]byte, 0, len(src)+len(wrapper)+2)
+	wrapped = append(wrapped, wrapper...)
+	wrapped = append(wrapped, src...)
+	if len(wrapped) > 0 && wrapped[len(wrapped)-1] != '\n' {
+		wrapped = append(wrapped, '\n')
+	}
+	wrapped = append(wrapped, '}', '\n')
+
+	facts, err := ScanBytes(wrapped, path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Editor-style line count of the ORIGINAL fragment text.
+	numLines := bytes.Count(src, []byte{'\n'})
+	if len(src) > 0 && src[len(src)-1] != '\n' {
+		numLines++
+	}
+
+	// The wrapper contributes exactly two lines before the fragment.
+	rebaseLines(facts, -2)
+	facts.NumLines = numLines
+	facts.Fragment = true
+	if len(facts.Functions) > 0 && facts.Functions[0].Name == "__fragment" {
+		facts.Functions[0].StartLine = 1
+		facts.Functions[0].BodyStartLine = 1
+		facts.Functions[0].BodyEndLine = numLines
+	}
+	return facts, nil
+}
+
+// rebaseLines shifts every recorded line number by delta (fragment wrapper
+// removal); column numbers are unchanged — the wrapper lines are bare.
+func rebaseLines(facts *SourceFacts, delta int) {
+	for i := range facts.Directives {
+		facts.Directives[i].Line += delta
+	}
+	for i := range facts.Functions {
+		f := &facts.Functions[i]
+		f.StartLine += delta
+		f.BodyStartLine += delta
+		f.BodyEndLine += delta
+	}
+	for i := range facts.Calls {
+		facts.Calls[i].Line += delta
+	}
+	for i := range facts.AllSQL {
+		facts.AllSQL[i].StartLine += delta
+		facts.AllSQL[i].EndLine += delta
+	}
+	for i := range facts.Queries {
+		facts.Queries[i].StartLine += delta
+		facts.Queries[i].EndLine += delta
+	}
+	for i := range facts.Branches {
+		b := &facts.Branches[i]
+		b.StartLine += delta
+		b.BlockStart += delta
+		b.BlockEnd += delta
+	}
+	for i := range facts.VarDecls {
+		facts.VarDecls[i].Line += delta
+	}
+	for i := range facts.Comments {
+		c := &facts.Comments[i]
+		c.StartLine += delta
+		c.EndLine += delta
+	}
+	for i := range facts.Unbalanced {
+		facts.Unbalanced[i].StartLine += delta
+	}
 }
 
 type scannerState struct {
@@ -76,7 +178,14 @@ type scannerState struct {
 	queries     []ExecSQLStatement
 	branches    []Branch
 	varDecls    []VarDecl
+	comments    []Comment
+	unbalanced  []UnbalancedRegion
 	tpcallCount int
+
+	braceDepth        int
+	outerOpenBrace    int // line of the outermost currently-open brace (-1 none)
+	outerOpenBraceCol int
+	openBraceLines    []int // stack of open brace lines
 
 	pendingFn   int    // index into functions awaiting its body brace (-1 none)
 	curFn       int    // index of the function whose body we are inside (-1 none)
@@ -119,7 +228,6 @@ func (s *scannerState) skipWhitespace() {
 }
 
 func (s *scannerState) scan() {
-	braceDepth := 0
 	var prevIdent string
 
 	for s.pos < s.len {
@@ -165,23 +273,34 @@ func (s *scannerState) scan() {
 
 		// 7. Track braces.
 		if s.src[s.pos] == '{' {
-			if braceDepth == 0 && s.pendingFn >= 0 {
+			if s.braceDepth == 0 && s.pendingFn >= 0 {
 				// The function definition's body opens here.
 				s.functions[s.pendingFn].BodyStartLine = s.line
 				s.curFn = s.pendingFn
 				s.pendingFn = -1
 			}
-			braceDepth++
+			if s.braceDepth == 0 {
+				s.outerOpenBrace, s.outerOpenBraceCol = s.line, s.col
+			}
+			s.openBraceLines = append(s.openBraceLines, s.line)
+			s.braceDepth++
 			s.advance()
 			s.pendingType = ""
 			prevIdent = ""
 			continue
 		}
 		if s.src[s.pos] == '}' {
-			if braceDepth > 0 {
-				braceDepth--
+			if s.braceDepth > 0 {
+				s.braceDepth--
+				s.openBraceLines = s.openBraceLines[:len(s.openBraceLines)-1]
+				if s.braceDepth == 0 {
+					s.outerOpenBrace = -1
+				}
+			} else {
+				// A closing brace with nothing open — unbalanced (PF-1.4).
+				s.unbalanced = append(s.unbalanced, UnbalancedRegion{Kind: "braces", StartLine: s.line, StartCol: s.col})
 			}
-			if braceDepth == 0 && s.curFn >= 0 {
+			if s.braceDepth == 0 && s.curFn >= 0 {
 				s.functions[s.curFn].BodyEndLine = s.line
 				s.curFn = -1
 			}
@@ -208,19 +327,20 @@ func (s *scannerState) scan() {
 				if prevIdent == "else" {
 					kind = BranchElseIf
 				}
-				s.recordIfBranch(kind, startLine, braceDepth)
+				s.recordIfBranch(kind, startLine, startCol, s.braceDepth)
 			} else if ident == "else" {
-				s.recordElseBranch(startLine, braceDepth)
+				s.recordElseBranch(startLine, startCol, s.braceDepth)
 			} else if s.pos < s.len && s.src[s.pos] == '(' {
 				// A call or a definition — either way any pending type
 				// context is done (e.g. `long fn_x(...)` is a def).
 				s.pendingType = ""
 				if !cKeywordsWithParen[ident] {
-					if braceDepth == 0 && isLikelyFuncDef(prevIdent, ident, s.src, s.pos) {
+					if s.braceDepth == 0 && isLikelyFuncDef(prevIdent, ident, s.src, s.pos) {
 						s.functions = append(s.functions, FunctionDef{
 							Name:       ident,
 							ReturnType: prevIdent,
 							StartLine:  startLine,
+							Col:        startCol,
 						})
 						s.pendingFn = len(s.functions) - 1
 					} else {
@@ -253,7 +373,7 @@ func (s *scannerState) scan() {
 					s.pendingType = ident
 				}
 			} else if s.pendingType != "" && !cKeywords[ident] {
-				s.recordVarDecl(ident, braceDepth)
+				s.recordVarDecl(ident, startCol, s.braceDepth)
 			}
 
 			// Restore pos if we skipped whitespace
@@ -273,7 +393,7 @@ func (s *scannerState) scan() {
 			if s.src[s.pos] == ';' {
 				prevIdent = ""
 				s.pendingType = ""
-				if braceDepth == 0 {
+				if s.braceDepth == 0 {
 					s.pendingFn = -1
 				}
 			}
@@ -292,25 +412,76 @@ func (s *scannerState) isLineStart() bool {
 	return true
 }
 
+// bannerVerRe matches the project's version markers ("Ver 1.5", "ver 2.2").
+var bannerVerRe = regexp.MustCompile(`(?i)\bver\.?\s*\d`)
+
+// bannerWordRe matches the delimit words of the banner convention ("added
+// here", "comment ends", "commented", "Start", "End").
+var bannerWordRe = regexp.MustCompile(`(?i)(added|comment|start|end)`)
+
+// isBannerText reports whether comment content follows the version-marker
+// banner convention (PF-1.1).
+func isBannerText(text string) bool {
+	return bannerVerRe.MatchString(text) && bannerWordRe.MatchString(text)
+}
+
+// skipBlockComment consumes one /* … */ comment, records its span, and
+// records an UnbalancedRegion fact when it never closes. C block comments do
+// NOT nest (PF-1.2): the comment ends at the first */ — banner conventions
+// that look like nesting are just comment text.
 func (s *scannerState) skipBlockComment() {
+	startLine, startCol, startOff := s.line, s.col, s.pos
 	s.advance() // /
 	s.advance() // *
+	closed := false
 	for s.pos < s.len {
 		if s.pos+1 < s.len && s.src[s.pos] == '*' && s.src[s.pos+1] == '/' {
 			s.advance() // *
 			s.advance() // /
-			return
+			closed = true
+			break
 		}
 		s.advance()
 	}
+	if !closed {
+		s.unbalanced = append(s.unbalanced, UnbalancedRegion{Kind: "block_comment", StartLine: startLine, StartCol: startCol})
+		return
+	}
+	text := string(s.src[startOff:s.pos])
+	kind := CommentBlock
+	live := false
+	if isBannerText(text) {
+		kind = CommentBanner
+		// A single-line banner is a marker beside live code; the multi-line
+		// "commented … comment ends" variant wraps dead content.
+		live = startLine == s.line
+	}
+	s.comments = append(s.comments, Comment{
+		Kind:      kind,
+		StartLine: startLine,
+		StartCol:  startCol,
+		EndLine:   s.line,
+		EndCol:    s.col - 1,
+		Live:      live,
+	})
 }
 
+// skipLineComment consumes one // comment and records its span (PF-1.1);
+// line comments end at the newline.
 func (s *scannerState) skipLineComment() {
+	startLine, startCol := s.line, s.col
 	s.advance() // /
 	s.advance() // /
 	for s.pos < s.len && s.src[s.pos] != '\n' {
 		s.advance()
 	}
+	s.comments = append(s.comments, Comment{
+		Kind:      CommentLine,
+		StartLine: startLine,
+		StartCol:  startCol,
+		EndLine:   startLine,
+		EndCol:    s.col - 1,
+	})
 }
 
 func (s *scannerState) skipStringLiteral() {
@@ -372,7 +543,9 @@ func (s *scannerState) scanDirective() {
 }
 
 func (s *scannerState) matchesExecSQL() bool {
-	if s.pos+7 > s.len {
+	// "exec sql" is 8 bytes — the window must fit entirely in the source
+	// (off-by-one here panicked on files whose tail lands in the scan path).
+	if s.pos+8 > s.len {
 		return false
 	}
 	sub := string(s.src[s.pos : s.pos+8])
@@ -387,7 +560,7 @@ func (s *scannerState) matchesExecSQL() bool {
 }
 
 func (s *scannerState) scanExecSQL() {
-	startLine := s.line
+	startLine, startCol := s.line, s.col
 	// Skip "EXEC SQL"
 	for s.pos < s.len && !unicode.IsSpace(rune(s.src[s.pos])) {
 		s.advance() // skip EXEC
@@ -398,6 +571,7 @@ func (s *scannerState) scanExecSQL() {
 	}
 
 	var raw bytes.Buffer
+	terminated := false
 	for s.pos < s.len {
 		// Comments inside SQL
 		if s.pos+1 < s.len && s.src[s.pos] == '/' && s.src[s.pos+1] == '*' {
@@ -430,9 +604,17 @@ func (s *scannerState) scanExecSQL() {
 		// End of SQL statement
 		if s.src[s.pos] == ';' {
 			s.advance() // consume ;
+			terminated = true
 			break
 		}
 		raw.WriteByte(s.advance())
+	}
+
+	if !terminated {
+		// Unterminated EXEC SQL (PF-1.4): a loud recorded fact, and the
+		// partial text is never passed off as a statement.
+		s.unbalanced = append(s.unbalanced, UnbalancedRegion{Kind: "exec_sql", StartLine: startLine, StartCol: startCol})
+		return
 	}
 
 	endLine := s.line
@@ -446,6 +628,7 @@ func (s *scannerState) scanExecSQL() {
 		Normalized: normalized,
 		Kind:       kind,
 		StartLine:  startLine,
+		StartCol:   startCol,
 		EndLine:    endLine,
 		CursorName: cursorName,
 		Func:       s.fnName(s.curFn),
@@ -717,7 +900,7 @@ func (s *scannerState) blockExtent(off int) (start, end int, ok bool) {
 
 // recordIfBranch captures one if/else-if header and its block. Read-only:
 // the main loop rescans the region normally afterwards.
-func (s *scannerState) recordIfBranch(kind BranchKind, startLine, depth int) {
+func (s *scannerState) recordIfBranch(kind BranchKind, startLine, startCol, depth int) {
 	off := s.skipReadOnly(s.pos)
 	if off >= s.len || s.src[off] != '(' {
 		return
@@ -735,6 +918,7 @@ func (s *scannerState) recordIfBranch(kind BranchKind, startLine, depth int) {
 		Kind:       kind,
 		Cond:       cond,
 		StartLine:  startLine,
+		StartCol:   startCol,
 		BlockStart: blockStart,
 		BlockEnd:   blockEnd,
 		Depth:      depth,
@@ -744,7 +928,7 @@ func (s *scannerState) recordIfBranch(kind BranchKind, startLine, depth int) {
 
 // recordElseBranch captures a plain else block; an `else if` is recorded by
 // recordIfBranch as BranchElseIf instead.
-func (s *scannerState) recordElseBranch(startLine, depth int) {
+func (s *scannerState) recordElseBranch(startLine, startCol, depth int) {
 	off := s.skipReadOnly(s.pos)
 	if off >= s.len {
 		return
@@ -759,6 +943,7 @@ func (s *scannerState) recordElseBranch(startLine, depth int) {
 	s.branches = append(s.branches, Branch{
 		Kind:       BranchElse,
 		StartLine:  startLine,
+		StartCol:   startCol,
 		BlockStart: blockStart,
 		BlockEnd:   blockEnd,
 		Depth:      depth,
@@ -768,7 +953,7 @@ func (s *scannerState) recordElseBranch(startLine, depth int) {
 
 // recordVarDecl records a declarator for the pending base type when the next
 // significant byte continues a declaration (; [ = , ).
-func (s *scannerState) recordVarDecl(name string, depth int) {
+func (s *scannerState) recordVarDecl(name string, col, depth int) {
 	off := s.skipReadOnly(s.pos)
 	if off >= s.len {
 		return
@@ -780,6 +965,7 @@ func (s *scannerState) recordVarDecl(name string, depth int) {
 			Type: s.pendingType,
 			Name: name,
 			Line: s.line,
+			Col:  col,
 			Func: s.fnName(s.curFn),
 		})
 	case '[':
@@ -787,6 +973,7 @@ func (s *scannerState) recordVarDecl(name string, depth int) {
 			Type:  s.pendingType,
 			Name:  name,
 			Line:  s.line,
+			Col:   col,
 			Array: true,
 			Func:  s.fnName(s.curFn),
 		})

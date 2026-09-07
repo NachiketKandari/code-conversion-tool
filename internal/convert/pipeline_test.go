@@ -151,9 +151,9 @@ func TestConvertGateEndToEnd(t *testing.T) {
 	}
 
 	// Ledger: everything appended except the blocked endpoint.
-	appended, failed, blocked, _ := opts.Ledger.Counts()
-	if appended < 10 || failed != 0 || blocked != 1 {
-		t.Errorf("ledger = appended %d, failed %d, blocked %d", appended, failed, blocked)
+	appended, failed, blocked, _, placeholders := opts.Ledger.Counts()
+	if appended < 10 || failed != 0 || blocked != 1 || placeholders != 0 {
+		t.Errorf("ledger = appended %d, failed %d, blocked %d, placeholders %d", appended, failed, blocked, placeholders)
 	}
 	var blockedNames []string
 	for _, e := range opts.Ledger.Units {
@@ -277,7 +277,7 @@ func TestConvertSkipLLM(t *testing.T) {
 	if len(res.Failed) != 0 {
 		t.Errorf("failed = %v, want none in skip-llm mode", res.Failed)
 	}
-	appended, failed, _, skipped := opts.Ledger.Counts()
+	appended, failed, _, skipped, _ := opts.Ledger.Counts()
 	if skipped != 3 || failed != 0 || appended < 10 {
 		t.Errorf("ledger = appended %d, failed %d, skipped %d", appended, failed, skipped)
 	}

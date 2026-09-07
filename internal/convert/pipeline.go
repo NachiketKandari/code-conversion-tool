@@ -55,12 +55,13 @@ type Options struct {
 
 // Result summarizes one convert run.
 type Result struct {
-	Files    []string
-	LLMCalls int
-	Blocked  []string
-	Failed   []string
-	Skipped  []string
-	TierB    *validate.Result
+	Files        []string
+	LLMCalls     int
+	Blocked      []string
+	Failed       []string
+	Skipped      []string
+	Placeholders []string
+	TierB        *validate.Result
 }
 
 // Run executes the plan. Deterministic units regenerate byte-identically on
@@ -206,6 +207,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 		opts.Ledger.Set(u.ID, ledger.StatusAppended, "", relPath(opts.BaseDir, ctrlFilePath))
 		addMap(opts, res, u, []string{relPath(opts.BaseDir, ctrlFilePath)})
+	}
+
+	// 4b. TPCall placeholders — deterministic, compilable stubs (PF-4.5):
+	// one `tuxgo:TODO` stub per site, ledger status placeholder, mapped in
+	// the conversion map like every other unit.
+	if err := renderTPCallPlaceholders(ctx, opts, res, svc); err != nil {
+		return nil, err
 	}
 	if err := opts.Ledger.Save(); err != nil {
 		return nil, err
@@ -418,6 +426,54 @@ func appendControllerMethod(ctx context.Context, opts Options, res *Result, svc 
 		return err
 	}
 	res.Files = append(res.Files, path)
+	return nil
+}
+
+// renderTPCallPlaceholders writes controller/tpcall_placeholders.go for the
+// plan's tpcall units and records each as a ledger placeholder with its
+// conversion-map entry (PF-4.4/4.5/4.6). No-op for plans without tpcalls.
+func renderTPCallPlaceholders(ctx context.Context, opts Options, res *Result, svc *gen.Service) error {
+	units := unitsOf(opts.Plan, plan.KindTPCall)
+	if len(units) == 0 {
+		return nil
+	}
+	path, err := opts.absPath(opts.BaseDir, units[0].TargetPath)
+	if err != nil {
+		return err
+	}
+	for _, u := range units {
+		opts.Ledger.Get(u.ID, string(u.Kind), u.Name) // register before transitions
+	}
+	if e := opts.Ledger.Get(units[0].ID, string(units[0].Kind), units[0].Name); e.Status == ledger.StatusPlaceholder {
+		return nil // resume: the placeholder file already landed
+	}
+	content, err := svc.PlaceholderFile(opts.Plan)
+	if err != nil {
+		for _, u := range units {
+			opts.Ledger.Set(u.ID, ledger.StatusFailed, err.Error())
+			res.Failed = append(res.Failed, u.Name)
+		}
+		return fmt.Errorf("convert: render tpcall placeholders: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("convert: write tpcall placeholders: %w", err)
+	}
+	if err := validateFile(ctx, opts, path); err != nil {
+		return err
+	}
+	res.Files = append(res.Files, path)
+	for _, u := range units {
+		reason := "external service call rendered as a tuxgo:TODO placeholder (no outbound-call convention, R8)"
+		if u.TP != nil && u.TP.Ambiguous {
+			reason = "external service call rendered as a tuxgo:TODO placeholder (ambiguous send/recv window)"
+		}
+		opts.Ledger.Set(u.ID, ledger.StatusPlaceholder, reason, relPath(opts.BaseDir, path))
+		addMap(opts, res, u, []string{relPath(opts.BaseDir, path)})
+		res.Placeholders = append(res.Placeholders, u.Name)
+	}
 	return nil
 }
 

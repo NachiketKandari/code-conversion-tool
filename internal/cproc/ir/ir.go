@@ -1,9 +1,14 @@
 // Package ir builds the deterministic Pro*C/Tuxedo intermediate
 // representation (PRD Phase 2, architecture.md §3): query units with
 // QueryType + template marking, the entry function's endpoint condition
-// inventory, FML input/output ops, host variables, and external-fn
-// references. Extraction is 100% tool work — no LLM involvement.
+// inventory, FML input/output ops with buffer roles, host variables,
+// external-fn references, and correlated tpcall sites. Extraction is 100%
+// tool work — no LLM involvement.
 package ir
+
+import (
+	"github.com/Public/convert-tux-to-go/internal/cproc/pred"
+)
 
 // QueryType is the deterministic classification of one logical query unit
 // (PRD §4.2.2: SELECT single-value / SELECT multi-row / INSERT / UPDATE /
@@ -62,14 +67,56 @@ const (
 // legacy read is guarded by FNOTPRES (defaults applied — PRD §4.8.3).
 // Dropped marks session/error plumbing that never reaches generated models
 // (§4.8.4: FML_USR_ID/FML_SSSN_ID handled by middleware, FML_ERR_MSG becomes
-// the returned error).
+// the returned error). Buffer names the buffer variable the op targeted
+// (PF-4.2), resolvable against File.Buffers for its role.
 type FmlOp struct {
 	Kind     FmlOpKind `json:"kind"`
 	Field    string    `json:"field"`
 	Target   string    `json:"target,omitempty"`
+	Buffer   string    `json:"buffer,omitempty"`
 	Line     int       `json:"line"`
 	Optional bool      `json:"optional,omitempty"`
 	Dropped  bool      `json:"dropped,omitempty"`
+}
+
+// FmlBufferRole names the data-flow role of an FML buffer variable
+// (PF-4.1): input (Ibuffer — the endpoint's request), output (Obuffer — the
+// response), send/recv (the two buffers of a tpcall), or unknown-role when
+// the naming convention does not recognize the variable (a visible fact,
+// never a guess).
+type FmlBufferRole string
+
+const (
+	BufferInput  FmlBufferRole = "input"
+	BufferOutput FmlBufferRole = "output"
+	BufferSend   FmlBufferRole = "send"
+	BufferRecv   FmlBufferRole = "recv"
+	// BufferUnknown marks a buffer variable outside the recognized naming
+	// convention — recorded, never guessed.
+	BufferUnknown FmlBufferRole = "unknown-role"
+)
+
+// BufferRole is one FML buffer variable's recorded convention role (PF-4.1).
+type BufferRole struct {
+	Name string        `json:"name"`
+	Role FmlBufferRole `json:"role"`
+}
+
+// TPCall is one correlated tpcall site (PF-4.3): the outbound service name,
+// the FML contract built from the surrounding block — Fadd32 ops into the
+// send buffer before the call, Fget32 ops from the receive buffer after —
+// and the site extent. Ambiguous marks a site whose send/recv buffer
+// variables could not be identified (contracts degrade to empty, visibly).
+type TPCall struct {
+	Service    string  `json:"service"`
+	SendBuffer string  `json:"send_buffer,omitempty"`
+	RecvBuffer string  `json:"recv_buffer,omitempty"`
+	SendFML    []FmlOp `json:"send_fml,omitempty"`
+	RecvFML    []FmlOp `json:"recv_fml,omitempty"`
+	StartLine  int     `json:"start_line"`
+	EndLine    int     `json:"end_line"`
+	Function   string  `json:"function,omitempty"`
+	Ambiguous  bool    `json:"ambiguous,omitempty"`
 }
 
 // HostVar is one host/bind variable referenced by queries or FML ops.
@@ -119,17 +166,19 @@ type Query struct {
 // Condition is one endpoint candidate from the condition inventory (§4.2.8).
 // Extraction emits the inventory for every run; only user-mapped conditions
 // become endpoints. Kind is if | elseif | else; IsDefault marks the
-// default/else branch.
+// default/else branch. Predicate is the parsed condition tree (PF-2.3) —
+// the raw Expr stays the audit trail, the tree is the query surface.
 type Condition struct {
-	Index     int      `json:"index"`
-	Kind      string   `json:"kind"`
-	Expr      string   `json:"expr,omitempty"`
-	FlagVars  []string `json:"flag_vars,omitempty"`
-	StartLine int      `json:"start_line"`
-	EndLine   int      `json:"end_line"`
-	FmlOps    []FmlOp  `json:"fml_ops,omitempty"`
-	QueryIDs  []string `json:"query_ids,omitempty"`
-	IsDefault bool     `json:"is_default,omitempty"`
+	Index     int        `json:"index"`
+	Kind      string     `json:"kind"`
+	Expr      string     `json:"expr,omitempty"`
+	Predicate *pred.Expr `json:"predicate,omitempty"`
+	FlagVars  []string   `json:"flag_vars,omitempty"`
+	StartLine int        `json:"start_line"`
+	EndLine   int        `json:"end_line"`
+	FmlOps    []FmlOp    `json:"fml_ops,omitempty"`
+	QueryIDs  []string   `json:"query_ids,omitempty"`
+	IsDefault bool       `json:"is_default,omitempty"`
 }
 
 // ExternalFn is one called-but-not-defined project symbol (fn_*/chk_*).
@@ -144,13 +193,20 @@ type ExternalFn struct {
 	QueryIDs  []string `json:"query_ids,omitempty"`
 }
 
-// File is the IR of one scanned .pc/.pcf file.
+// File is the IR of one scanned .pc/.pcf file. Fragment marks a lone code
+// block converted under the standard rubric (PF-3): Entry is the synthesized
+// pseudo-function __fragment and every line number is the fragment file's
+// own. Buffers records the FML buffer-role facts (PF-4.1); TPCalls records
+// the correlated outbound-service call sites (PF-4.3).
 type File struct {
 	Path        string       `json:"path"`
 	Entry       string       `json:"entry,omitempty"`
+	Fragment    bool         `json:"fragment,omitempty"`
 	Functions   []string     `json:"functions"`
 	Conditions  []Condition  `json:"conditions,omitempty"`
 	FmlOps      []FmlOp      `json:"fml_ops,omitempty"`
+	Buffers     []BufferRole `json:"buffers,omitempty"`
+	TPCalls     []TPCall     `json:"tpcalls,omitempty"`
 	Queries     []*Query     `json:"queries"`
 	HostVars    []HostVar    `json:"host_vars"`
 	ExternalFns []ExternalFn `json:"external_fns,omitempty"`

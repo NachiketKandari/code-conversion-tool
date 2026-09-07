@@ -67,8 +67,30 @@ func Default() *Config {
 		Concurrency: Concurrency{Workers: 1},
 		ValidateCfg: ValidateCfg{MaxRetries: 3, Compile: "auto"},
 		DB:          DB{WithGorm: false},
+		Buffers:     DefaultBuffers(),
 		Paths:       DefaultPaths(),
 	}
+}
+
+// BufferRoleNames are the roles the pipeline understands (PF-4.1). The
+// registry maps buffer variable NAMES to these roles.
+var BufferRoleNames = map[string]bool{
+	"input":  true, // Ibuffer — the endpoint's FML input (Fget32 source)
+	"output": true, // Obuffer — the endpoint's FML output (Fadd32 target)
+	"send":   true, // Sbuffer — a tpcall's send buffer
+	"recv":   true, // Rbuffer — a tpcall's receive buffer
+}
+
+// DefaultBuffers returns the project's buffer naming convention registry
+// (PF-4.1): matching is case-insensitive on the variable name or its last
+// `_`-delimited segment (ptr_fml_Ibuffer → Ibuffer → input).
+func DefaultBuffers() Buffers {
+	return Buffers{Roles: map[string]string{
+		"Ibuffer": "input",
+		"Obuffer": "output",
+		"Sbuffer": "send",
+		"Rbuffer": "recv",
+	}}
 }
 
 func ptr(f float64) *float64 { return &f }
@@ -103,7 +125,16 @@ type Config struct {
 	ValidateCfg ValidateCfg `yaml:"validate"`
 	DB          DB          `yaml:"db"`
 	Convert     Convert     `yaml:"convert"`
+	Buffers     Buffers     `yaml:"buffers"`
 	Paths       Paths       `yaml:"paths"`
+}
+
+// Buffers is the config-extensible FML buffer-role registry (PF-4.1):
+// variable names → roles (input/output/send/recv). The defaults are the
+// project naming convention; renamed or additional buffer kinds register
+// here instead of in code.
+type Buffers struct {
+	Roles map[string]string `yaml:"roles"`
 }
 
 // Run carries the generation-wide budget and the default profile name.

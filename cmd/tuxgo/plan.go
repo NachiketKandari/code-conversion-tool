@@ -11,6 +11,7 @@ import (
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/plan"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
@@ -28,6 +29,7 @@ func runPlan(ctx context.Context, args []string) error {
 	mappingPath := fs.String("mapping", "", "User mapping YAML: service identity + which conditions become endpoints (default: convert.mapping from config)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
 	ledgerDir := fs.String("ledger", "", "Ledger directory for plan.json/plan.md (default: paths.ledger from config)")
+	fragment := fs.Bool("fragment", false, "Force fragment mode on a single-file input (PF-3.1)")
 
 	flagArgs, positional := reorderArgs(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -60,7 +62,7 @@ func runPlan(ctx context.Context, args []string) error {
 		"endpoints", len(mapping.Endpoints),
 		"db_method_pins", len(mapping.DBMethods))
 
-	files, main, err := extractPlanIR(target)
+	files, main, err := extractPlanIR(target, cfg, *fragment)
 	if err != nil {
 		return err
 	}
@@ -106,27 +108,29 @@ func runPlan(ctx context.Context, args []string) error {
 	return nil
 }
 
-// extractPlanIR extracts the IR for the plan: file mode returns that file;
-// directory mode returns all files and picks the one with a Tuxedo entry.
-func extractPlanIR(target string) ([]*ir.File, *ir.File, error) {
+// extractPlanIR extracts the IR for the plan: file mode returns that file
+// (fragments auto-detected when the file holds no entry and no function
+// definitions, PF-3.1; -fragment forces it); directory mode returns all
+// files and picks the one with a Tuxedo entry.
+func extractPlanIR(target string, cfg *config.Config, forceFragment bool) ([]*ir.File, *ir.File, error) {
 	fi, err := os.Stat(target)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot access target path %s: %w", target, err)
 	}
 	if !fi.IsDir() {
-		main, err := ir.ExtractFile(target)
+		main, err := ir.ExtractFileOpts(target, irOptions(cfg, forceFragment))
 		if err != nil {
 			return nil, nil, err
 		}
 		return []*ir.File{main}, main, nil
 	}
-	files, err := ir.ExtractDir(target)
+	files, err := ir.ExtractDirOpts(target, irOptions(cfg, false))
 	if err != nil {
 		return nil, nil, err
 	}
 	var main *ir.File
 	for _, f := range files {
-		if f.Entry != "" {
+		if f.Entry != "" && f.Entry != "__fragment" {
 			if main != nil {
 				return nil, nil, fmt.Errorf("plan: %s holds multiple Tuxedo entries (%s, %s) — plan a single file at a time",
 					target, main.Entry, f.Entry)

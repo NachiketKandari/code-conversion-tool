@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/cproc/pred"
 	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
 )
 
@@ -31,20 +32,109 @@ var (
 	aliasRe      = regexp.MustCompile(`(?i)AS\s+"([A-Za-z0-9_]+)"`)
 )
 
-// ExtractFile scans one Pro*C file and builds its IR.
+// defaultBufferRoles is the project's buffer naming convention (PF-4.1):
+// Ibuffer is the endpoint's FML input, Obuffer its output, and Sbuffer/
+// Rbuffer the send/receive buffers of a tpcall. Matching is case-insensitive
+// on the whole variable name or on its `_`-delimited tail segment
+// (ptr_fml_Ibuffer → Ibuffer).
+var defaultBufferRoles = map[string]FmlBufferRole{
+	"ibuffer": BufferInput,
+	"obuffer": BufferOutput,
+	"sbuffer": BufferSend,
+	"rbuffer": BufferRecv,
+}
+
+// Options carries extraction-time configuration that is data, not code
+// (PF-4.1): the buffer-role registry flows from .tuxgo.yaml so renamed or
+// additional buffer conventions need no code change. ForceFragment runs the
+// fragment rubric on a file whose automatic detection is ambiguous (PF-3.1).
+type Options struct {
+	BufferRoles   map[string]string
+	ForceFragment bool
+}
+
+// DefaultOptions returns the stock extraction configuration (the project
+// naming convention registry).
+func DefaultOptions() Options {
+	roles := make(map[string]string, len(defaultBufferRoles))
+	for k, v := range defaultBufferRoles {
+		roles[k] = string(v)
+	}
+	return Options{BufferRoles: roles}
+}
+
+// roleOf resolves a buffer variable's convention role: exact (case-
+// insensitive) name first, then the last `_`-delimited segment; unknown
+// names degrade to the visible unknown-role fact (PF-4.1).
+func roleOf(bufVar string, roles map[string]FmlBufferRole) FmlBufferRole {
+	name := strings.ToLower(strings.TrimSpace(bufVar))
+	if name == "" {
+		return BufferUnknown
+	}
+	if r, ok := roles[name]; ok {
+		return r
+	}
+	if i := strings.LastIndex(name, "_"); i >= 0 {
+		if r, ok := roles[name[i+1:]]; ok {
+			return r
+		}
+	}
+	return BufferUnknown
+}
+
+// ExtractFile scans one Pro*C file and builds its IR. Files holding no
+// SVC_* entry function and no function definitions convert as fragments
+// (PF-3.1: automatic detection — a lone block wrapped as __fragment);
+// -fragment forces the fragment rubric when detection is ambiguous.
 func ExtractFile(path string) (*File, error) {
+	return ExtractFileOpts(path, Options{})
+}
+
+// ExtractFileOpts is ExtractFile with the run's extraction options (buffer
+// registry, forced fragment mode).
+func ExtractFileOpts(path string, opts Options) (*File, error) {
 	facts, err := scanner.ScanFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return build(facts), nil
+	if !opts.ForceFragment && !isFragmentFacts(facts) {
+		return build(facts, opts), nil
+	}
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	facts, err = scanner.ScanFragment(src, path)
+	if err != nil {
+		return nil, err
+	}
+	return build(facts, opts), nil
+}
+
+// isFragmentFacts applies the automatic fragment detection (PF-3.1): no
+// SVC_* entry and no function definitions means the file is a lone code
+// block; a file with helper definitions (fn_*.pc) is a full helper file.
+func isFragmentFacts(facts *scanner.SourceFacts) bool {
+	for _, fn := range facts.Functions {
+		if strings.HasPrefix(fn.Name, "SVC_") {
+			return false
+		}
+	}
+	return len(facts.Functions) == 0
 }
 
 // ExtractDir walks a folder recursively and extracts every .pc/.pcf file.
-// External fn symbols (called but not defined locally) resolve against the
-// definitions found anywhere in the scanned corpus (§4.2.9): a resolved
-// fn_'s SQL units live in the defining file's IR and are referenced by ID.
+// Directory mode is corpus mode: no fragment detection (helper files keep
+// their full-file semantics). External fn symbols (called but not defined
+// locally) resolve against the definitions found anywhere in the scanned
+// corpus (§4.2.9): a resolved fn_'s SQL units live in the defining file's
+// IR and are referenced by ID.
 func ExtractDir(dir string) ([]*File, error) {
+	return ExtractDirOpts(dir, Options{})
+}
+
+// ExtractDirOpts is ExtractDir with the run's extraction options.
+func ExtractDirOpts(dir string, opts Options) ([]*File, error) {
 	var paths []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
@@ -69,7 +159,7 @@ func ExtractDir(dir string) ([]*File, error) {
 		if err != nil {
 			return nil, fmt.Errorf("error scanning %s: %w", p, err)
 		}
-		units = append(units, &fileUnit{facts: facts, ir: build(facts)})
+		units = append(units, &fileUnit{facts: facts, ir: build(facts, opts)})
 	}
 
 	// Definition corpus: fn name → defining file + body traits (same shape
@@ -158,8 +248,9 @@ func fnRanges(facts *scanner.SourceFacts) map[string]fnRange {
 }
 
 // build derives the IR from scanned facts. Pure: same facts → same IR.
-func build(facts *scanner.SourceFacts) *File {
-	f := &File{Path: facts.Path}
+func build(facts *scanner.SourceFacts, opts Options) *File {
+	facts = commentLiveFacts(facts)
+	f := &File{Path: facts.Path, Fragment: facts.Fragment}
 	for _, fn := range facts.Functions {
 		f.Functions = append(f.Functions, fn.Name)
 	}
@@ -170,6 +261,10 @@ func build(facts *scanner.SourceFacts) *File {
 			entry = fn.Name
 			break
 		}
+	}
+	if entry == "" && facts.Fragment {
+		// The synthesized pseudo-function is the entry (PF-3.2).
+		entry = "__fragment"
 	}
 	f.Entry = entry
 
@@ -182,9 +277,194 @@ func build(facts *scanner.SourceFacts) *File {
 
 	f.ExternalFns = buildExternalFns(facts)
 	f.HostVars = buildHostVars(facts, f)
+	f.Buffers = buildBuffers(facts, opts)
+	f.TPCalls = buildTPCalls(facts, opts, f.Buffers)
 
 	linkDuplicates(f.Queries)
 	return f
+}
+
+// commentLiveFacts excludes any call or SQL statement whose start position
+// falls inside a recorded comment span (PF-1.5) — with the comment inventory
+// in place the exclusion is a deterministic overlap query instead of a
+// scanner incident. Recorded facts never sit inside comments (the scanner
+// skips them), so on healthy inputs this is a no-op; on malformed ones it is
+// the loud, testable rule.
+func commentLiveFacts(facts *scanner.SourceFacts) *scanner.SourceFacts {
+	if len(facts.Comments) == 0 {
+		return facts
+	}
+	live := *facts
+	live.Calls = nil
+	live.AllSQL = nil
+	live.Queries = nil
+	for _, c := range facts.Calls {
+		if !facts.InComment(c.Line, c.Col) {
+			live.Calls = append(live.Calls, c)
+		}
+	}
+	for _, q := range facts.AllSQL {
+		if !facts.InComment(q.StartLine, q.StartCol) {
+			live.AllSQL = append(live.AllSQL, q)
+		}
+	}
+	for _, q := range facts.Queries {
+		if !facts.InComment(q.StartLine, q.StartCol) {
+			live.Queries = append(live.Queries, q)
+		}
+	}
+	return &live
+}
+
+// roleRegistry resolves the run's buffer-role registry (config-extensible,
+// PF-4.1); an absent registry falls back to the project convention.
+func roleRegistry(opts Options) map[string]FmlBufferRole {
+	if len(opts.BufferRoles) == 0 {
+		return defaultBufferRoles
+	}
+	roles := make(map[string]FmlBufferRole, len(opts.BufferRoles))
+	for name, role := range opts.BufferRoles {
+		roles[strings.ToLower(name)] = FmlBufferRole(role)
+	}
+	return roles
+}
+
+// buildBuffers records every FML buffer variable observed in live code with
+// its convention role (PF-4.1): Fget32/Fadd32 first arguments plus tpcall
+// send/receive buffer arguments. Unknown names degrade to the visible
+// unknown-role fact, never a guess.
+func buildBuffers(facts *scanner.SourceFacts, opts Options) []BufferRole {
+	registry := roleRegistry(opts)
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	for i := range facts.Calls {
+		call := &facts.Calls[i]
+		switch {
+		case call.Name == "Fget32" || call.Name == "Fadd32":
+			args := splitArgs(call.Args)
+			if len(args) > 0 {
+				add(normalizeTarget(args[0]))
+			}
+		case call.IsTpCall:
+			args := splitArgs(call.Args)
+			if len(args) > 1 {
+				add(normalizeTarget(args[1]))
+			}
+			if len(args) > 3 {
+				add(normalizeTarget(args[3]))
+			}
+		}
+	}
+	sort.Strings(names)
+	out := make([]BufferRole, 0, len(names))
+	for _, name := range names {
+		out = append(out, BufferRole{Name: name, Role: roleOf(name, registry)})
+	}
+	return out
+}
+
+// svcNameRe extracts the quoted service name of a tpcall site.
+var svcNameRe = regexp.MustCompile(`"([^"]+)"`)
+
+// buildTPCalls correlates every live tpcall site with its FML contract
+// (PF-4.3): the send contract is the Fadd32 ops into the send buffer inside
+// the enclosing block before the call, the receive contract the Fget32 ops
+// from the receive buffer after it. Sites whose buffer variables cannot be
+// identified degrade to an Ambiguous fact — visible, never a guess.
+func buildTPCalls(facts *scanner.SourceFacts, opts Options, buffers []BufferRole) []TPCall {
+	if facts.TpCallCount == 0 {
+		return nil
+	}
+	var out []TPCall
+	for i := range facts.Calls {
+		call := &facts.Calls[i]
+		if !call.IsTpCall {
+			continue
+		}
+		args := splitArgs(call.Args)
+		tp := TPCall{
+			StartLine: call.Line,
+			EndLine:   call.Line,
+			Function:  call.Func,
+			Ambiguous: true,
+		}
+		if len(args) > 0 {
+			if m := svcNameRe.FindStringSubmatch(args[0]); m != nil {
+				tp.Service = m[1]
+			}
+		}
+		if len(args) > 1 {
+			tp.SendBuffer = normalizeTarget(args[1])
+		}
+		if len(args) > 3 {
+			tp.RecvBuffer = normalizeTarget(args[3])
+		}
+		if tp.Service == "" || tp.SendBuffer == "" || tp.RecvBuffer == "" {
+			out = append(out, tp)
+			continue
+		}
+		tp.Ambiguous = false
+
+		winStart, winEnd := enclosingWindow(facts, call)
+		for j := range facts.Calls {
+			other := &facts.Calls[j]
+			if other.Func != call.Func {
+				continue
+			}
+			switch other.Name {
+			case "Fadd32":
+				if op, ok := fmlOpOf(other, facts); ok && op.Buffer == tp.SendBuffer &&
+					other.Line >= winStart && other.Line < call.Line {
+					tp.SendFML = append(tp.SendFML, op)
+				}
+			case "Fget32":
+				if op, ok := fmlOpOf(other, facts); ok && op.Buffer == tp.RecvBuffer &&
+					other.Line > call.Line && other.Line <= winEnd {
+					tp.RecvFML = append(tp.RecvFML, op)
+					if other.Line > tp.EndLine {
+						tp.EndLine = other.Line
+					}
+				}
+			}
+		}
+		out = append(out, tp)
+	}
+	return out
+}
+
+// enclosingWindow returns the line extent of the tpcall site's surrounding
+// block (PF-4.3): the innermost recorded branch block containing the call,
+// else the function body, else the file.
+func enclosingWindow(facts *scanner.SourceFacts, call *scanner.FunctionCall) (start, end int) {
+	bestStart, bestEnd := 0, 0
+	for i := range facts.Branches {
+		b := &facts.Branches[i]
+		if b.Function != call.Func || b.BlockStart == 0 {
+			continue
+		}
+		if b.BlockStart <= call.Line && call.Line <= b.BlockEnd {
+			if bestStart == 0 || (b.BlockStart >= bestStart && b.BlockEnd <= bestEnd) {
+				bestStart, bestEnd = b.BlockStart, b.BlockEnd
+			}
+		}
+	}
+	if bestStart != 0 {
+		return bestStart, bestEnd
+	}
+	lo, hi := 1, facts.NumLines
+	for _, fn := range facts.Functions {
+		if fn.Name == call.Func && fn.BodyStartLine > 0 && fn.BodyEndLine > 0 {
+			lo, hi = fn.BodyStartLine, fn.BodyEndLine
+		}
+	}
+	return lo, hi
 }
 
 // buildQueries turns EXEC SQL statements into logical query units. Cursor
@@ -462,12 +742,19 @@ func tablesFromDML(sql string, qt QueryType) []string {
 // buildConditions reconstructs the entry function's top-level if/else-if/else
 // chains (scanner branch records at body depth 1; C syntax guarantees an
 // else/elseif continues the most recent same-depth branch in its function)
-// and keeps only multi-branch chains as endpoint candidates (§4.2.8).
+// and keeps only multi-branch chains as endpoint candidates (§4.2.8). For
+// fragments (PF-3.3) a single-branch chain is kept too — a lone if is a
+// one-endpoint fragment — and a fragment with no top-level chain at all
+// becomes one endpoint covering the whole block (design decision 3).
 func buildConditions(facts *scanner.SourceFacts, entry string, queries []*Query) []Condition {
+	minChain := 2
+	if facts.Fragment {
+		minChain = 1
+	}
 	var chain []Condition
 	var conditions []Condition
 	flush := func() {
-		if len(chain) >= 2 {
+		if len(chain) >= minChain {
 			for i := range chain {
 				chain[i].Index = len(conditions) + i + 1
 			}
@@ -484,15 +771,13 @@ func buildConditions(facts *scanner.SourceFacts, entry string, queries []*Query)
 		switch b.Kind {
 		case scanner.BranchIf:
 			flush()
-			cond := Condition{Kind: string(b.Kind), Expr: b.Cond, StartLine: b.StartLine, EndLine: b.BlockEnd}
-			cond.FlagVars = flagVarsOf(b.Cond, decls)
+			cond := conditionOfBranch(b, decls)
 			chain = append(chain, cond)
 		case scanner.BranchElseIf:
 			if len(chain) == 0 {
 				flush()
 			}
-			cond := Condition{Kind: string(b.Kind), Expr: b.Cond, StartLine: b.StartLine, EndLine: b.BlockEnd}
-			cond.FlagVars = flagVarsOf(b.Cond, decls)
+			cond := conditionOfBranch(b, decls)
 			chain = append(chain, cond)
 		case scanner.BranchElse:
 			if len(chain) == 0 {
@@ -503,12 +788,61 @@ func buildConditions(facts *scanner.SourceFacts, entry string, queries []*Query)
 	}
 	flush()
 
+	if facts.Fragment && len(conditions) == 0 {
+		// A chainless fragment is one endpoint unit over its whole body.
+		conditions = append(conditions, Condition{
+			Index:     1,
+			Kind:      "else",
+			IsDefault: true,
+			StartLine: 1,
+			EndLine:   facts.NumLines,
+		})
+	}
+
 	for i := range conditions {
 		c := &conditions[i]
 		c.FmlOps = fmlOpsInRange(facts, entry, c.StartLine, c.EndLine)
 		c.QueryIDs = queryIDsInRange(queries, c.StartLine, c.EndLine)
 	}
 	return conditions
+}
+
+// conditionOfBranch builds one condition record: raw text, the parsed
+// predicate tree (PF-2), and the flag vars resolved from the tree's
+// Ident/comparison leaves against the file's declared vars (PF-2.2). Raw
+// conditions keep the substring fallback so no result regresses.
+func conditionOfBranch(b scanner.Branch, decls map[string]bool) Condition {
+	cond := Condition{Kind: string(b.Kind), Expr: b.Cond, StartLine: b.StartLine, EndLine: b.BlockEnd}
+	if b.Cond != "" {
+		tree := pred.Parse(b.Cond)
+		cond.Predicate = &tree
+		cond.FlagVars = flagVarsOf(&tree, b.Cond, decls)
+	}
+	return cond
+}
+
+// flagVarsOf picks the condition's flag variables from the predicate tree
+// (PF-2.2): Ident leaves — including the Ident sides of comparison leaves —
+// count iff they resolve against the declared vars. Raw-degraded conditions
+// fall back to the substring tokenization of the raw text.
+func flagVarsOf(tree *pred.Expr, rawCond string, decls map[string]bool) []string {
+	var out []string
+	if tree != nil && !tree.IsRaw() {
+		for _, name := range pred.Idents(tree) {
+			if decls[name] {
+				out = append(out, name)
+			}
+		}
+		return out
+	}
+	for _, tok := range strings.FieldsFunc(rawCond, func(r rune) bool {
+		return !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+	}) {
+		if decls[tok] {
+			out = append(out, tok)
+		}
+	}
+	return out
 }
 
 // entryFmlOps collects the FML ops the entry function performs outside the
@@ -561,7 +895,8 @@ func fmlOpsInRange(facts *scanner.SourceFacts, entry string, start, end int) []F
 }
 
 // fmlOpOf converts an Fget32/Fadd32 call into an FmlOp: field = arg 2,
-// target = the host variable written (get, arg 4) or read (add, arg 3).
+// target = the host variable written (get, arg 4) or read (add, arg 3),
+// buffer = the buffer variable the op ran on (PF-4.2, arg 1).
 // Optional marks FNOTPRES-guarded reads (§4.8.3).
 func fmlOpOf(call *scanner.FunctionCall, facts *scanner.SourceFacts) (FmlOp, bool) {
 	var kind FmlOpKind
@@ -579,6 +914,9 @@ func fmlOpOf(call *scanner.FunctionCall, facts *scanner.SourceFacts) (FmlOp, boo
 	}
 	field := strings.TrimSpace(args[1])
 	op := FmlOp{Kind: kind, Field: field, Line: call.Line, Dropped: droppedFmlFields[field]}
+	if len(args) > 0 {
+		op.Buffer = normalizeTarget(args[0])
+	}
 
 	idx := 2
 	if kind == FmlGet && len(args) > 3 {
@@ -715,20 +1053,6 @@ func isIdentLike(s string) bool {
 		}
 	}
 	return true
-}
-
-// flagVarsOf picks the condition's identifiers that are declared host
-// variables (e.g. c_flag).
-func flagVarsOf(cond string, decls map[string]bool) []string {
-	var out []string
-	for _, tok := range strings.FieldsFunc(cond, func(r rune) bool {
-		return !(r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
-	}) {
-		if decls[tok] {
-			out = append(out, tok)
-		}
-	}
-	return out
 }
 
 // declNames maps every declared variable name in the file.

@@ -71,6 +71,13 @@ db:
                              # true: the nav-example variant where the store also carries the legacy
                              # *gorm.DB handle — NewXStore(oracle *gorm.DB, db *sqlx.DB)
 
+buffers:                     # FML buffer-role registry (PF-4.1): variable names → roles.
+  roles:                     # Matching is case-insensitive on the whole name or its last
+    Ibuffer: input           # `_`-segment (ptr_fml_Ibuffer → Ibuffer → input). Unknown
+    Obuffer: output          # names surface as a visible unknown-role fact, never a guess.
+    Sbuffer: send            # Register renamed/other buffer kinds (VIEW, CARRAY, future
+    Rbuffer: recv            # conventions) here instead of in code.
+
 convert:                     # defaults for plan/convert so repeat runs need no CLI arguments
   input: ""                  # .pc/.pcf file or directory converted when the CLI passes no
                              # positional target (e.g. tux/SVC_MF_NAV_LIST.pc)

@@ -73,6 +73,7 @@ type ExecSQLStatement struct {
 	Normalized string
 	Kind       SQLKind
 	StartLine  int
+	StartCol   int
 	EndLine    int
 	CursorName string // populated for DECLARE CURSOR, OPEN, FETCH, CLOSE
 	Func       string // enclosing function name ("" when outside any body)
@@ -85,6 +86,7 @@ type FunctionDef struct {
 	Name          string
 	ReturnType    string
 	StartLine     int
+	Col           int // column of the definition's name
 	BodyStartLine int // line of the opening brace (0 when unresolved)
 	BodyEndLine   int // line of the matching closing brace (0 when unresolved)
 }
@@ -126,6 +128,7 @@ type Branch struct {
 	Kind       BranchKind
 	Cond       string // normalized condition text ("" for else)
 	StartLine  int    // line of the if/else keyword
+	StartCol   int    // column of the if/else keyword
 	BlockStart int    // line of the block's opening brace (0 when unbraced)
 	BlockEnd   int    // line of the block's closing brace (0 when unbraced)
 	Depth      int    // brace depth at the keyword (function body top level == 1)
@@ -140,11 +143,76 @@ type VarDecl struct {
 	Type  string
 	Name  string
 	Line  int
+	Col   int // column of the declarator name
 	Array bool
 	Func  string // enclosing function name ("" for file-scope/params)
 }
 
+// CommentKind classifies a recorded comment span (PF-1.1).
+type CommentKind string
+
+const (
+	// CommentBlock is an ordinary /* … */ block comment.
+	CommentBlock CommentKind = "block"
+	// CommentLine is a // line comment (ends at the newline).
+	CommentLine CommentKind = "line"
+	// CommentBanner is a version-marker comment ("Ver X.Y added here",
+	// "Ver X.Y comment ends", …) of the project's banner convention.
+	CommentBanner CommentKind = "banner"
+)
+
+// Comment records one comment span as a first-class scanner fact (PF-1.1).
+// Live marks a banner comment that delimits a live code region: single-line
+// version markers sit next to live code; the multi-line "commented … comment
+// ends" variant wraps dead content, so Live is false there. Comment content
+// is opaque — no brace/paren/string inside a span ever affects nesting.
+type Comment struct {
+	Kind      CommentKind
+	StartLine int
+	StartCol  int
+	EndLine   int
+	EndCol    int
+	Live      bool
+}
+
+// UnbalancedRegion records a construct the scanner could not close
+// (PF-1.4): an unterminated block comment, an EXEC SQL block with no
+// terminating semicolon, or an unbalanced brace — loud facts, never a
+// silently truncated parse.
+type UnbalancedRegion struct {
+	Kind      string // "block_comment" | "exec_sql" | "braces"
+	StartLine int
+	StartCol  int
+}
+
+// InComment reports whether the 1-based line/col position falls inside any
+// recorded comment span (PF-1.3) — the queryable "is this position code?"
+// check consumers use instead of re-scanning.
+func (f *SourceFacts) InComment(line, col int) bool {
+	for _, c := range f.Comments {
+		if c.StartLine == line && c.EndLine == line {
+			if col >= c.StartCol && col <= c.EndCol {
+				return true
+			}
+			continue
+		}
+		if line == c.StartLine && col >= c.StartCol {
+			return true
+		}
+		if line == c.EndLine && col <= c.EndCol {
+			return true
+		}
+		if line > c.StartLine && line < c.EndLine {
+			return true
+		}
+	}
+	return false
+}
+
 // SourceFacts represents all structural facts extracted from a Pro*C file.
+// Fragment marks a ScanFragment synthesis (PF-3.2): the facts come from a
+// lone code block wrapped as the pseudo-function __fragment, with every
+// line number rebased to the original fragment file.
 type SourceFacts struct {
 	Path        string
 	NumLines    int
@@ -155,5 +223,8 @@ type SourceFacts struct {
 	Queries     []ExecSQLStatement
 	Branches    []Branch
 	VarDecls    []VarDecl
+	Comments    []Comment
+	Unbalanced  []UnbalancedRegion
 	TpCallCount int
+	Fragment    bool
 }

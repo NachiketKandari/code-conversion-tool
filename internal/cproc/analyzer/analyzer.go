@@ -166,6 +166,7 @@ type Report struct {
 // known function definitions (may be empty for single-file mode) and the
 // run's scoring options (marks + per-fn overrides).
 func analyzeFacts(facts *scanner.SourceFacts, c corpus, opts Options) *Report {
+	facts = commentLiveFacts(facts)
 	// 1. Identify locally defined functions
 	localDefMap := make(map[string]bool)
 	var localFns []string
@@ -250,6 +251,31 @@ func analyzeFacts(facts *scanner.SourceFacts, c corpus, opts Options) *Report {
 		Complexity:      tier,
 		Reasons:         strings.Join(reasonParts, "; "),
 	}
+}
+
+// commentLiveFacts excludes any call or SQL statement whose start position
+// falls inside a recorded comment span (PF-1.5): with the comment inventory
+// in place the exclusion is a deterministic overlap query — testable, not
+// incidental. Recorded facts never sit inside comments (the scanner skips
+// them), so on healthy inputs this is a no-op and scores cannot drift.
+func commentLiveFacts(facts *scanner.SourceFacts) *scanner.SourceFacts {
+	if len(facts.Comments) == 0 {
+		return facts
+	}
+	live := *facts
+	live.Calls = nil
+	live.Queries = nil
+	for _, c := range facts.Calls {
+		if !facts.InComment(c.Line, c.Col) {
+			live.Calls = append(live.Calls, c)
+		}
+	}
+	for _, q := range facts.Queries {
+		if !facts.InComment(q.StartLine, q.StartCol) {
+			live.Queries = append(live.Queries, q)
+		}
+	}
+	return &live
 }
 
 // AnalyzeFile evaluates a single .pc/.pcf file using the OQ18 complexity rubric.
