@@ -83,4 +83,4 @@ paths:
   audit: conversion_logs/audit  # per-run audit trail (§4.7)
   ledger: conversion_logs/ledger # unit status + source→target conversion map (§4.6, Phase 5)
   state: conversion_logs/state   # IR cache, re-indexed on mtime (Phase 2)
-  staged: conversion_logs/staged  # generated-code staging when paths.mainGo is empty
+  staged: conversion_logs/_staged # generated-code staging when paths.mainGo is empty

@@ -26,7 +26,7 @@ func DefaultPaths() Paths {
 		Audit:  "conversion_logs/audit",
 		Ledger: "conversion_logs/ledger",
 		State:  "conversion_logs/state",
-		Staged: "conversion_logs/staged",
+		Staged: "conversion_logs/_staged",
 	}
 }
 

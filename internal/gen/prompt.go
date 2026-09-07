@@ -2,6 +2,7 @@ package gen
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/budget"
@@ -81,21 +82,63 @@ func (s *Service) BranchCalls(c *ir.Condition, p *plan.Plan) ([]*ir.Query, map[s
 	return queries, calls, nil
 }
 
-// ContractOf renders the request/response field lists a controller prompt
-// consumes (decision 10: Fget32 = inputs, Fadd32 = outputs).
-func (s *Service) ContractOf(endpoint string) (request, response string) {
+// ControllerPromptContext renders the fixed contract a controller prompt
+// consumes: the exact method signature (named returns data/err), the
+// endpoint's request/response structs, and the row structs its store calls
+// return — all verbatim, so the model references parameter and field names
+// exactly instead of guessing them (live-smoke finding: ActiveFlg vs
+// CActiveFlag, req vs request).
+func (s *Service) ControllerPromptContext(endpoint string, p *plan.Plan, storeMethods []string) (string, error) {
 	c := s.ConditionOf(endpoint)
 	if c == nil {
-		return "", ""
+		return "", fmt.Errorf("gen: no condition for endpoint %s", endpoint)
 	}
-	var req, resp []string
-	for _, f := range contractFields(c.FmlOps, ir.FmlGet) {
-		req = append(req, fmt.Sprintf("%s %s `json:%q`", f.Name, f.Type, f.JSONTag))
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "func (s *%s) %s(c context.Context, request *models.%s) (data []*models.%s, err error)\n",
+		lowerFirst(s.Mapping.Service)+"Controller", endpoint, s.requestType(endpoint), s.responseType(endpoint))
+	sb.WriteString("\ntype " + s.requestType(endpoint) + " struct {\n")
+	sb.WriteString(indentFields(contractFields(c.FmlOps, ir.FmlGet)))
+	sb.WriteString("}\n")
+	sb.WriteString("\ntype " + s.responseType(endpoint) + " struct {\n")
+	sb.WriteString(indentFields(contractFields(c.FmlOps, ir.FmlAdd)))
+	sb.WriteString("}\n")
+
+	rows := map[string]bool{}
+	for _, u := range p.Units {
+		if u.Kind != plan.KindDBMethod || len(u.QueryIDs) == 0 || !slices.Contains(storeMethods, u.Name) {
+			continue
+		}
+		q := s.Query(u.QueryIDs[0])
+		if q == nil || isCountQuery(q) {
+			continue
+		}
+		row := s.RowName(u.QueryIDs[0], u.Name)
+		if rows[row] {
+			continue
+		}
+		fields, err := s.rowFields(q)
+		if err != nil {
+			return "", err
+		}
+		rows[row] = true
+		sb.WriteString("\ntype " + row + " struct {\n")
+		sb.WriteString(indentFields(fields))
+		sb.WriteString("}\n")
 	}
-	for _, f := range contractFields(c.FmlOps, ir.FmlAdd) {
-		resp = append(resp, fmt.Sprintf("%s %s `json:%q`", f.Name, f.Type, f.JSONTag))
+	return sb.String(), nil
+}
+
+// indentFields renders struct fields gofmt-shaped.
+func indentFields(fields []templates.FieldSpec) string {
+	var sb strings.Builder
+	for _, f := range fields {
+		sb.WriteString("\t" + f.Name + " " + f.Type)
+		if tag := f.Tag(); tag != "" {
+			sb.WriteString(" `" + tag + "`")
+		}
+		sb.WriteString("\n")
 	}
-	return strings.Join(req, "\n"), strings.Join(resp, "\n")
+	return sb.String()
 }
 
 // RenderControllerMethod wraps an accepted LLM body in the controller

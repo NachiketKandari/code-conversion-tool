@@ -211,6 +211,39 @@ func TestConvertRetryFeedsTrimmedErrors(t *testing.T) {
 	}
 }
 
+// TestConvertConcurrentDBUnitsByteIdentical: workers>1 must produce the same
+// bytes as workers=1 — the pool renders in parallel, the merge stays in unit
+// order. Run under `go test -race` for the data-race check.
+func TestConvertConcurrentDBUnitsByteIdentical(t *testing.T) {
+	solo, _ := convertFixture(t)
+	if _, err := Run(context.Background(), solo); err != nil {
+		t.Fatal(err)
+	}
+	pool, _ := convertFixture(t)
+	pool.Workers = 5
+	if _, err := Run(context.Background(), pool); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"pkg/services/nav/db/nav.go",
+		"pkg/services/nav/db/interface.go",
+		"pkg/services/nav/models/nav.go",
+		"pkg/services/nav/controller/nav.go",
+	} {
+		a, err := os.ReadFile(filepath.Join(solo.BaseDir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(filepath.Join(pool.BaseDir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(a) != string(b) {
+			t.Errorf("%s differs between workers=1 and workers=5", rel)
+		}
+	}
+}
+
 func promptOf(t *testing.T, req map[string]any) string {
 	t.Helper()
 	msgs, ok := req["messages"].([]any)

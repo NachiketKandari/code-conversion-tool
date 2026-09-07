@@ -106,6 +106,7 @@ func runConvert(ctx context.Context, args []string) error {
 		Plan: p, Main: main, Source: string(src), FnFiles: files,
 		Client: client, Budget: b, BaseDir: base,
 		Ledger: led, Validator: v, MaxRetries: cfg.ValidateCfg.MaxRetries, Audit: rec,
+		Workers: cfg.Concurrency.Workers,
 	})
 	if err != nil {
 		return err

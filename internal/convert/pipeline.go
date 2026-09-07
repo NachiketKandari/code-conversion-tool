@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
@@ -42,6 +43,7 @@ type Options struct {
 	Validator  *validate.Validator
 	MaxRetries int
 	Audit      *audit.Recorder // per-run audit folder (§4.7); nil = skip
+	Workers    int             // DB-unit render pool size (concurrency.workers); <1 → 1
 }
 
 // Result summarizes one convert run.
@@ -82,25 +84,19 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 
-	// 2. DB methods — deterministic; the interface accumulates per unit (§4.2.3).
-	dbBodies := map[string]dbOut{}
-	var dbUnitIDs []string
-	for _, u := range unitsOf(opts.Plan, plan.KindDBMethod) {
-		dbUnitIDs = append(dbUnitIDs, u.ID)
+	// 2. DB methods — deterministic. Renders run through a bounded worker
+	// pool (concurrency.workers); the ledger and the interface accumulate
+	// serially in unit order, so bytes are identical to a workers=1 run.
+	dbUnits := unitsOf(opts.Plan, plan.KindDBMethod)
+	dbBodies, err := renderDBUnits(svc, dbUnits, opts.workerCount())
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range dbUnits {
 		e := opts.Ledger.Get(u.ID, string(u.Kind), u.Name)
 		if e.Status == ledger.StatusAppended {
-			body, sig, _, err := svc.DBMethod(u)
-			if err != nil {
-				return nil, err
-			}
-			dbBodies[u.ID] = dbOut{body, sig}
-			continue
+			continue // resume: already recorded
 		}
-		body, sig, _, err := svc.DBMethod(u)
-		if err != nil {
-			return nil, err
-		}
-		dbBodies[u.ID] = dbOut{body, sig}
 		opts.Ledger.Set(u.ID, ledger.StatusGenerated, "")
 		addMap(opts, res, u, []string{u.TargetPath})
 	}
@@ -115,8 +111,8 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if err := writeFileValidated(ctx, opts, res, dbFilePath, dbFile, "db-methods"); err != nil {
 		return nil, err
 	}
-	for _, id := range dbUnitIDs {
-		opts.Ledger.Set(id, ledger.StatusAppended, "", relPath(opts.BaseDir, dbFilePath))
+	for _, u := range dbUnits {
+		opts.Ledger.Set(u.ID, ledger.StatusAppended, "", relPath(opts.BaseDir, dbFilePath))
 	}
 
 	ifacePath, err := opts.absPath(opts.BaseDir, svc.Mapping.ImportPath("db")+"/interface.go")
@@ -226,8 +222,16 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 	if err != nil {
 		return "", "", fmt.Errorf("convert: query replacement for %s: %w", u.Name, err)
 	}
-	req, resp := svc.ContractOf(u.Name)
-	prompt = buildPrompt(view, dbContract, req, resp, u.Name)
+	methods := make([]string, 0, len(calls))
+	for _, call := range calls {
+		methods = append(methods, call.Name)
+	}
+	sort.Strings(methods)
+	contract, err := svc.ControllerPromptContext(u.Name, opts.Plan, methods)
+	if err != nil {
+		return "", "", err
+	}
+	prompt = buildPrompt(view, dbContract, contract, u.Name)
 
 	if err := opts.Budget.CheckInput(prompt); err != nil {
 		return "", "", fmt.Errorf("convert: %w — trim the mapping or raise run.maxPromptTokens", err)
@@ -279,20 +283,23 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 const systemPrompt = `You convert one legacy Pro*C/Tuxedo branch into the body of a Go controller method.
 Rules:
 - Emit ONLY the Go statements that go between the method's braces. No package, imports, or func declaration.
-- Call the database exclusively through the store signatures provided. Never write SQL.
-- The request struct fields carry the FML inputs; fill the response struct fields from the query rows.
+- The signature is fixed and provided verbatim: the context parameter is c, the request parameter is request, and the named returns are data and err. Never declare or use req, resp, or Response.
+- Read inputs only as request.<Field>, using the request struct's verbatim field names.
+- Call the database exclusively through the store signatures provided — exactly the parameters each signature shows, same count and order. Never write SQL.
+- Store methods return []*models.X or *models.X per their signatures; the row structs are provided verbatim — use their field names exactly, never invent fields.
+- String comparisons use double-quoted literals: flag == "Y", never 'Y'.
+- Every identifier must be one of: request.<Field>, a store call, data, err, or a local you declare. No hallucinated variables.
+- The method template already emits the START and END debug logs — never write logger START/END statements in the body.
 - Preserve the branch's business logic (flag checks, loops, decodes) as idiomatic Go.
-- Start with logger.Log(c).Debug("START") and defer logger.Log(c).Debug("END").
-- On error return the named results: return nil, err (data is the named return).`
+- On error return nil, err; on success return data, err.`
 
 // buildPrompt assembles the deterministic context: rewritten branch view,
-// DB contract, request/response field lists.
-func buildPrompt(view budget.View, dbContract, request, response, endpoint string) string {
+// DB contract, and the fixed signature + verbatim struct definitions.
+func buildPrompt(view budget.View, dbContract, contract, endpoint string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
 	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
-	sb.WriteString("Request struct fields (FML inputs):\n" + request + "\n\n")
-	sb.WriteString("Response struct fields (FML outputs):\n" + response + "\n\n")
+	sb.WriteString("Fixed method signature and verbatim struct definitions (parameter and field names must match exactly):\n" + contract + "\n\n")
 	sb.WriteString("Legacy branch, with every SQL block already replaced by its store call:\n\n" + view.Source + "\n")
 	return sb.String()
 }
@@ -312,22 +319,33 @@ func branchSource(src string, from, to int) string {
 	return strings.Join(lines[from-1:to], "\n")
 }
 
-// validateBody parses the body wrapped in a synthetic method — Tier A on the
-// LLM's slice before it lands in the file.
+// validateBody checks the body wrapped in a synthetic method. gofmt
+// normalization is deterministic — space-vs-tab indentation from the model
+// is auto-fixed downstream (appendControllerMethod re-formats the file), so
+// only parse errors reject an attempt.
 func validateBody(opts Options, body string) []string {
 	wrapped := "package controller\n\nimport (\n\t\"context\"\n\tmodels \"mutual-fund-be/pkg/services/nav/models\"\n)\n\ntype t struct{}\n\nfunc (t) Check(ctx context.Context) (err error) {\n" + body + "\n}\n"
-	tmp, err := os.CreateTemp("", "tuxgo-body-*.go")
-	if err != nil {
-		return []string{err.Error()}
+	if _, ferr := format.Source([]byte(wrapped)); ferr != nil {
+		return trimGoErrors(ferr.Error())
 	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(wrapped); err != nil {
-		tmp.Close()
-		return []string{err.Error()}
+	return nil
+}
+
+// trimGoErrors keeps compiler-shaped lines from a parse error, bounded.
+func trimGoErrors(out string) []string {
+	var kept []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimRight(line, " \t\r")
+		if line == "" {
+			continue
+		}
+		kept = append(kept, line)
+		if len(kept) >= 40 {
+			kept = append(kept, "… (output trimmed)")
+			break
+		}
 	}
-	tmp.Close()
-	res := opts.Validator.Syntax(tmp.Name())
-	return res.Errors
+	return kept
 }
 
 // cleanBody strips code fences and stray blank lines the model may add —
@@ -368,7 +386,7 @@ func appendControllerMethod(ctx context.Context, opts Options, res *Result, svc 
 		}
 		merged = string(existing) + "\n" + strings.TrimRight(method, "\n") + "\n"
 	} else {
-		header := "package controller\n\nimport (\n\t\"context\"\n\n\t\"" + svc.Mapping.Module + "/pkg/logger\"\n\t\"" + svc.ModelsPkg + "\"\n)\n"
+		header := "package controller\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"fmt\"\n\n\t\"" + svc.Module + "/pkg/logger\"\n\t\"" + svc.ModelsPkg + "\"\n)\n"
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
@@ -435,6 +453,50 @@ func recordAttempt(ctx context.Context, opts Options, u plan.Unit, attempt int, 
 }
 
 // --- helpers ---
+
+// renderDBUnits renders every DB unit through a bounded worker pool.
+// svc.DBMethod is a pure read of the shared IR (queries, host vars, mapping
+// pins), so parallel renders are race-free; results land indexed by unit
+// position and the first unit-order error wins, so output and failures match
+// a workers=1 run byte for byte.
+func renderDBUnits(svc *gen.Service, units []plan.Unit, workers int) (map[string]dbOut, error) {
+	out := make([]dbOut, len(units))
+	errs := make([]error, len(units))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, workers)
+	for i := range units {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			body, sig, _, err := svc.DBMethod(units[i])
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			out[i] = dbOut{body, sig}
+		}(i)
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	bodies := make(map[string]dbOut, len(units))
+	for i, u := range units {
+		bodies[u.ID] = out[i]
+	}
+	return bodies, nil
+}
+
+func (o Options) workerCount() int {
+	if o.Workers < 1 {
+		return 1
+	}
+	return o.Workers
+}
 
 func unitsOf(p *plan.Plan, k plan.Kind) []plan.Unit {
 	var out []plan.Unit

@@ -208,8 +208,14 @@ func (c *openaiClient) Stream(ctx context.Context, req ChatRequest, onDelta func
 }
 
 func (c *openaiClient) payload(req ChatRequest) chatCompletionPayload {
+	model := req.Model
+	if model == "" {
+		// The endpoint's profile model is the default — callers may leave
+		// Model empty to follow the routed config (OpenRouter 400s without it).
+		model = c.endpoint.Model
+	}
 	p := chatCompletionPayload{
-		Model:       req.Model,
+		Model:       model,
 		Messages:    req.Messages,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,

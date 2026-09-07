@@ -285,3 +285,32 @@ func goastInspect(path, iface string) ([]string, error) {
 	}
 	return out, nil
 }
+
+// TestGenControllerPromptContext pins the fixed contract the controller
+// prompt consumes: exact signature (named returns), verbatim request/
+// response structs, and only the row structs the endpoint's store calls
+// return.
+func TestGenControllerPromptContext(t *testing.T) {
+	s, p := genNavFixture(t)
+	ctx, err := s.ControllerPromptContext("SipFreedem", p, []string{"GetCount", "IsD2uActive", "GetSipFreedem"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"func (s *navController) SipFreedem(c context.Context, request *models.SipFreedemRequest) (data []*models.SipFreedemResponse, err error)",
+		"type SipFreedemRequest struct {",
+		"type SipFreedemResponse struct {",
+		"type SipFreedemDetail struct {",
+		"type D2uActive struct {",
+	} {
+		if !strings.Contains(ctx, want) {
+			t.Errorf("prompt context missing %q:\n%s", want, ctx)
+		}
+	}
+	// Only the endpoint's own rows: other units' structs stay out.
+	for _, absent := range []string{"NavHistoryDetail", "NavListRequest", "GetCount"} {
+		if strings.Contains(ctx, absent) {
+			t.Errorf("prompt context leaks %q:\n%s", absent, ctx)
+		}
+	}
+}
