@@ -47,6 +47,21 @@ func NewFakeServer(script ...FakeResponse) *FakeServer {
 // Close shuts the server down.
 func (s *FakeServer) Close() { s.srv.Close() }
 
+// RequestCount returns how many requests the fake has served.
+func (s *FakeServer) RequestCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.Requests)
+}
+
+// Reset replaces the playback script and rewinds it (request history kept).
+func (s *FakeServer) Reset(script ...FakeResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.script = script
+	s.i = 0
+}
+
 func (s *FakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

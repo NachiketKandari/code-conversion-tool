@@ -1,0 +1,552 @@
+// Package convert is the conversion orchestrator (PRD §4.2, architecture.md
+// Phase 5): it executes the deterministic plan unit by unit — models, DB
+// methods, accumulated interfaces, handler glue and router render with zero
+// LLM calls — and fills exactly one template-shaped gap per endpoint with
+// the LLM: the controller body, generated from the query-replaced branch
+// view plus the DB signatures (never raw SQL, §4.2.4/§4.3). Every unit
+// transitions the ledger (resumable) and leaves an audit record (§4.7).
+package convert
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"go/format"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/Public/convert-tux-to-go/internal/audit"
+	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
+	"github.com/Public/convert-tux-to-go/internal/gen"
+	"github.com/Public/convert-tux-to-go/internal/ledger"
+	"github.com/Public/convert-tux-to-go/internal/llm"
+	"github.com/Public/convert-tux-to-go/internal/plan"
+	"github.com/Public/convert-tux-to-go/internal/telemetry"
+	"github.com/Public/convert-tux-to-go/internal/validate"
+)
+
+// Options carries one convert run's wiring.
+type Options struct {
+	Plan       *plan.Plan
+	Main       *ir.File
+	Source     string
+	FnFiles    []*ir.File
+	Client     llm.Client // the LLM seam — fake server in CI
+	Budget     budget.Budget
+	BaseDir    string // module root when the target service exists, else the staged root
+	Ledger     *ledger.Ledger
+	Validator  *validate.Validator
+	MaxRetries int
+	Audit      *audit.Recorder // per-run audit folder (§4.7); nil = skip
+}
+
+// Result summarizes one convert run.
+type Result struct {
+	Files    []string
+	LLMCalls int
+	Blocked  []string
+	Failed   []string
+	TierB    *validate.Result
+}
+
+// Run executes the plan. Deterministic units regenerate byte-identically on
+// resume; only pending LLM units consume the client.
+func Run(ctx context.Context, opts Options) (*Result, error) {
+	if opts.Plan == nil || opts.Main == nil || opts.Ledger == nil || opts.Validator == nil {
+		return nil, fmt.Errorf("convert: plan, main IR, ledger and validator are required")
+	}
+	svc, err := gen.NewService(gen.Options{Plan: opts.Plan, Main: opts.Main, FnFiles: opts.FnFiles})
+	if err != nil {
+		return nil, err
+	}
+	res := &Result{}
+
+	// Blocked endpoints (unresolved external fns) — visible, never silent.
+	blockedEndpoints := map[string]string{}
+	for _, b := range opts.Plan.Blockers {
+		for _, e := range b.Endpoints {
+			blockedEndpoints[e] = b.Fn
+		}
+	}
+
+	// 1. Models — deterministic.
+	modelsPath, err := opts.absPath(opts.BaseDir, svc.Mapping.ImportPath("models")+"/"+svc.Mapping.Service+".go")
+	if err != nil {
+		return nil, err
+	}
+	if err := generateFile(ctx, opts, res, "u01", "models", "models.go", modelsPath, func() (string, error) { return svc.ModelFile(opts.Plan) }); err != nil {
+		return nil, err
+	}
+
+	// 2. DB methods — deterministic; the interface accumulates per unit (§4.2.3).
+	dbBodies := map[string]dbOut{}
+	var dbUnitIDs []string
+	for _, u := range unitsOf(opts.Plan, plan.KindDBMethod) {
+		dbUnitIDs = append(dbUnitIDs, u.ID)
+		e := opts.Ledger.Get(u.ID, string(u.Kind), u.Name)
+		if e.Status == ledger.StatusAppended {
+			body, sig, _, err := svc.DBMethod(u)
+			if err != nil {
+				return nil, err
+			}
+			dbBodies[u.ID] = dbOut{body, sig}
+			continue
+		}
+		body, sig, _, err := svc.DBMethod(u)
+		if err != nil {
+			return nil, err
+		}
+		dbBodies[u.ID] = dbOut{body, sig}
+		opts.Ledger.Set(u.ID, ledger.StatusGenerated, "")
+		addMap(opts, res, u, []string{u.TargetPath})
+	}
+	dbFilePath, err := opts.absPath(opts.BaseDir, svc.Mapping.ImportPath("db")+"/"+svc.Mapping.Service+".go")
+	if err != nil {
+		return nil, err
+	}
+	dbFile, err := svc.DBMethodsFile(opts.Plan)
+	if err != nil {
+		return nil, err
+	}
+	if err := writeFileValidated(ctx, opts, res, dbFilePath, dbFile, "db-methods"); err != nil {
+		return nil, err
+	}
+	for _, id := range dbUnitIDs {
+		opts.Ledger.Set(id, ledger.StatusAppended, "", relPath(opts.BaseDir, dbFilePath))
+	}
+
+	ifacePath, err := opts.absPath(opts.BaseDir, svc.Mapping.ImportPath("db")+"/interface.go")
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range unitsOf(opts.Plan, plan.KindDBMethod) {
+		if err := svc.AccumulateDBInterface(ifacePath, dbBodies[u.ID].sig); err != nil {
+			return nil, fmt.Errorf("convert: accumulate db interface: %w", err)
+		}
+	}
+	if err := validateFile(ctx, opts, ifacePath); err != nil {
+		return nil, err
+	}
+	res.Files = append(res.Files, ifacePath)
+
+	// 3. Controller + handler interfaces, handler methods, router — deterministic.
+	handlerIfaceID := unitID(opts.Plan, plan.KindHandlerInterface)
+	artifacts := []struct {
+		id, name, path string
+		render         func() (string, error)
+	}{
+		{unitID(opts.Plan, plan.KindControllerInterface), "controller-interface.go",
+			svc.Mapping.ImportPath("controller") + "/interface.go",
+			func() (string, error) { return svc.ControllerInterface(opts.Plan) }},
+		{handlerIfaceID, "handler-interface.go",
+			svc.Mapping.ImportPath("handler") + "/interface.go",
+			func() (string, error) { return svc.HandlerInterface(opts.Plan) }},
+		{handlerIfaceID + "+methods", "handler-methods.go",
+			svc.Mapping.ImportPath("handler") + "/" + svc.Mapping.Service + ".go",
+			func() (string, error) { return svc.HandlerMethodsFile() }},
+		{unitID(opts.Plan, plan.KindRouter), "router-snippet",
+			svc.Mapping.ImportPath("handler") + "/router_snippet.txt",
+			func() (string, error) { return svc.Router() }},
+	}
+	for _, a := range artifacts {
+		path, err := opts.absPath(opts.BaseDir, a.path)
+		if err != nil {
+			return nil, err
+		}
+		var render = a.render
+		if err := generateFile(ctx, opts, res, a.id, "file", a.name, path, render); err != nil {
+			return nil, err
+		}
+	}
+
+	// 4. Controller bodies — the one LLM gap per endpoint (§4.2.4).
+	dbContract := dbSignatures(opts.Plan, dbBodies)
+	ctrlFilePath, err := opts.absPath(opts.BaseDir, svc.Mapping.ImportPath("controller")+"/"+svc.Mapping.Service+".go")
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range unitsOf(opts.Plan, plan.KindControllerMethod) {
+		opts.Ledger.Get(u.ID, string(u.Kind), u.Name) // register before any transition
+		if fn, blocked := blockedEndpoints[u.Name]; blocked {
+			opts.Ledger.Set(u.ID, ledger.StatusBlocked, "unresolved external fn "+fn)
+			res.Blocked = append(res.Blocked, u.Name)
+			continue
+		}
+		if opts.Ledger.Get(u.ID, string(u.Kind), u.Name).Status == ledger.StatusAppended {
+			continue // resume: already converted
+		}
+		if opts.Client == nil {
+			return nil, fmt.Errorf("convert: endpoint %s needs the LLM client but none is configured", u.Name)
+		}
+		body, _, err := controllerBody(ctx, opts, res, svc, u, dbContract)
+		if err != nil {
+			opts.Ledger.Set(u.ID, ledger.StatusFailed, err.Error())
+			res.Failed = append(res.Failed, u.Name)
+			continue
+		}
+		if err := appendControllerMethod(ctx, opts, res, svc, u, ctrlFilePath, body); err != nil {
+			opts.Ledger.Set(u.ID, ledger.StatusFailed, err.Error())
+			res.Failed = append(res.Failed, u.Name)
+			continue
+		}
+		opts.Ledger.Set(u.ID, ledger.StatusAppended, "", relPath(opts.BaseDir, ctrlFilePath))
+		addMap(opts, res, u, []string{relPath(opts.BaseDir, ctrlFilePath)})
+	}
+	if err := opts.Ledger.Save(); err != nil {
+		return nil, err
+	}
+
+	// 5. Tier B — batched when the target service exists (plan-conversion §2).
+	tb := opts.Validator.CompileAll(ctx)
+	res.TierB = &tb
+	if tb.DegradeReason != "" {
+		telemetry.Log(ctx).Warn("tier B validation skipped", "reason", tb.DegradeReason)
+	}
+	return res, nil
+}
+
+// controllerBody assembles the controller unit's prompt (rewritten branch +
+// DB signatures + FML contract, never raw SQL), calls the LLM with bounded
+// retries feeding trimmed validation errors, and returns the accepted body.
+func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Service, u plan.Unit, dbContract string) (body, prompt string, err error) {
+	c := svc.ConditionOf(u.Name)
+	if c == nil {
+		return "", "", fmt.Errorf("convert: no condition for endpoint %s", u.Name)
+	}
+	branch := branchSource(opts.Source, c.StartLine, c.EndLine)
+	queries, calls, err := svc.BranchCalls(c, opts.Plan)
+	if err != nil {
+		return "", "", err
+	}
+	view, err := budget.ReplaceQueries(branch, queries, calls)
+	if err != nil {
+		return "", "", fmt.Errorf("convert: query replacement for %s: %w", u.Name, err)
+	}
+	req, resp := svc.ContractOf(u.Name)
+	prompt = buildPrompt(view, dbContract, req, resp, u.Name)
+
+	if err := opts.Budget.CheckInput(prompt); err != nil {
+		return "", "", fmt.Errorf("convert: %w — trim the mapping or raise run.maxPromptTokens", err)
+	}
+
+	e := opts.Ledger.Get(u.ID, string(u.Kind), u.Name)
+	var lastErrs []string
+	for attempt := 0; attempt <= opts.MaxRetries; attempt++ {
+		e.Attempts++
+		messages := []llm.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: prompt},
+		}
+		if len(lastErrs) > 0 {
+			messages = append(messages, llm.Message{
+				Role:    "user",
+				Content: "Your previous output failed validation:\n" + strings.Join(lastErrs, "\n") + "\nFix these errors and emit only the corrected method body.",
+			})
+		}
+		response, cerr := opts.Client.Chat(ctx, llm.ChatRequest{
+			Model:       "", // endpoint default (resolved by the client's wiring)
+			Messages:    messages,
+			Temperature: 0.1,
+		})
+		res.LLMCalls++
+		if cerr != nil {
+			lastErrs = []string{cerr.Error()}
+			recordAttempt(ctx, opts, u, attempt, prompt, "", lastErrs)
+			continue
+		}
+		if oerr := opts.Budget.CheckOutput(response.Content); oerr != nil {
+			lastErrs = []string{oerr.Error()}
+			recordAttempt(ctx, opts, u, attempt, prompt, response.Content, lastErrs)
+			continue
+		}
+		body = cleanBody(response.Content)
+		if verr := validateBody(opts, body); len(verr) > 0 {
+			lastErrs = verr
+			recordAttempt(ctx, opts, u, attempt, prompt, response.Content, verr)
+			continue
+		}
+		recordAttempt(ctx, opts, u, attempt, prompt, response.Content, nil)
+		opts.Ledger.Set(u.ID, ledger.StatusValidated, "")
+		return body, prompt, nil
+	}
+	return "", prompt, fmt.Errorf("validation failed after %d attempts: %s", opts.MaxRetries+1, strings.Join(lastErrs, "; "))
+}
+
+const systemPrompt = `You convert one legacy Pro*C/Tuxedo branch into the body of a Go controller method.
+Rules:
+- Emit ONLY the Go statements that go between the method's braces. No package, imports, or func declaration.
+- Call the database exclusively through the store signatures provided. Never write SQL.
+- The request struct fields carry the FML inputs; fill the response struct fields from the query rows.
+- Preserve the branch's business logic (flag checks, loops, decodes) as idiomatic Go.
+- Start with logger.Log(c).Debug("START") and defer logger.Log(c).Debug("END").
+- On error return the named results: return nil, err (data is the named return).`
+
+// buildPrompt assembles the deterministic context: rewritten branch view,
+// DB contract, request/response field lists.
+func buildPrompt(view budget.View, dbContract, request, response, endpoint string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
+	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
+	sb.WriteString("Request struct fields (FML inputs):\n" + request + "\n\n")
+	sb.WriteString("Response struct fields (FML outputs):\n" + response + "\n\n")
+	sb.WriteString("Legacy branch, with every SQL block already replaced by its store call:\n\n" + view.Source + "\n")
+	return sb.String()
+}
+
+// branchSource slices the 1-based inclusive line range out of src.
+func branchSource(src string, from, to int) string {
+	lines := strings.Split(src, "\n")
+	if from < 1 {
+		from = 1
+	}
+	if to > len(lines) {
+		to = len(lines)
+	}
+	if from > to {
+		return ""
+	}
+	return strings.Join(lines[from-1:to], "\n")
+}
+
+// validateBody parses the body wrapped in a synthetic method — Tier A on the
+// LLM's slice before it lands in the file.
+func validateBody(opts Options, body string) []string {
+	wrapped := "package controller\n\nimport (\n\t\"context\"\n\tmodels \"mutual-fund-be/pkg/services/nav/models\"\n)\n\ntype t struct{}\n\nfunc (t) Check(ctx context.Context) (err error) {\n" + body + "\n}\n"
+	tmp, err := os.CreateTemp("", "tuxgo-body-*.go")
+	if err != nil {
+		return []string{err.Error()}
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(wrapped); err != nil {
+		tmp.Close()
+		return []string{err.Error()}
+	}
+	tmp.Close()
+	res := opts.Validator.Syntax(tmp.Name())
+	return res.Errors
+}
+
+// cleanBody strips code fences and stray blank lines the model may add —
+// line-based, so the body's own indentation (which gofmt normalizes) is
+// preserved exactly.
+func cleanBody(content string) string {
+	lines := strings.Split(content, "\n")
+	var out []string
+	for _, ln := range lines {
+		if t := strings.TrimSpace(ln); t == "```" || t == "```go" {
+			continue
+		}
+		out = append(out, ln)
+	}
+	for len(out) > 0 && strings.TrimSpace(out[0]) == "" {
+		out = out[1:]
+	}
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
+}
+
+// appendControllerMethod appends the rendered method to the controller file
+// (text append + import header on creation — bodies are LLM artifacts, the
+// go/ast append model stays reserved for interfaces). The file is normalized
+// with go/format after every append so Tier A passes deterministically.
+func appendControllerMethod(ctx context.Context, opts Options, res *Result, svc *gen.Service, u plan.Unit, path, body string) error {
+	method, err := svc.RenderControllerMethod(u.Name, body)
+	if err != nil {
+		return err
+	}
+	var merged string
+	if _, statErr := os.Stat(path); statErr == nil {
+		existing, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return rerr
+		}
+		merged = string(existing) + "\n" + strings.TrimRight(method, "\n") + "\n"
+	} else {
+		header := "package controller\n\nimport (\n\t\"context\"\n\n\t\"" + svc.Mapping.Module + "/pkg/logger\"\n\t\"" + svc.ModelsPkg + "\"\n)\n"
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		merged = header + "\n" + strings.TrimRight(method, "\n") + "\n"
+	}
+	formatted, ferr := format.Source([]byte(merged))
+	if ferr != nil {
+		return fmt.Errorf("convert: controller file does not parse after append: %w", ferr)
+	}
+	if err := os.WriteFile(path, formatted, 0o644); err != nil {
+		return err
+	}
+	if err := validateFile(ctx, opts, path); err != nil {
+		return err
+	}
+	res.Files = append(res.Files, path)
+	return nil
+}
+
+// dbOut is one rendered DB method: its body and interface signature.
+type dbOut struct {
+	body string
+	sig  string
+}
+
+// dbSignatures renders the store contract lines for controller prompts.
+func dbSignatures(p *plan.Plan, bodies map[string]dbOut) string {
+	var lines []string
+	for _, u := range unitsOf(p, plan.KindDBMethod) {
+		b := bodies[u.ID]
+		lines = append(lines, "s.store."+b.sig)
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
+// recordAttempt writes the unit's audit record (§4.7): template, prompt,
+// raw response, validation outcome. Best-effort.
+func recordAttempt(ctx context.Context, opts Options, u plan.Unit, attempt int, prompt, response string, errs []string) {
+	if opts.Audit == nil {
+		return
+	}
+	record := map[string]any{
+		"unit": u.ID, "kind": u.Kind, "name": u.Name, "attempt": attempt,
+		"template": u.TemplateID, "llm": u.LLM,
+		"prompt":   prompt,
+		"response": response,
+		"errors":   errs,
+		"outcome":  "ok",
+	}
+	if len(errs) > 0 {
+		record["outcome"] = "failed"
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	if _, err := opts.Audit.Write(fmt.Sprintf("unit-%s-attempt%d.json", u.ID, attempt), func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	}); err != nil {
+		telemetry.Log(ctx).Warn("audit record failed", "unit", u.ID, "error", err)
+	}
+}
+
+// --- helpers ---
+
+func unitsOf(p *plan.Plan, k plan.Kind) []plan.Unit {
+	var out []plan.Unit
+	for _, u := range p.Units {
+		if u.Kind == k {
+			out = append(out, u)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func unitID(p *plan.Plan, k plan.Kind) string {
+	for _, u := range p.Units {
+		if u.Kind == k {
+			return u.ID
+		}
+	}
+	return ""
+}
+
+// generateFile renders a deterministic artifact, writes it (unless the
+// ledger already marked it appended — resume), validates Tier A, and
+// records the ledger + audit trail.
+func generateFile(ctx context.Context, opts Options, res *Result, id, kind, name, path string, render func() (string, error)) error {
+	e := opts.Ledger.Get(id, kind, name)
+	if e.Status == ledger.StatusAppended {
+		return nil // resume
+	}
+	content, err := render()
+	if err != nil {
+		opts.Ledger.Set(id, ledger.StatusFailed, err.Error())
+		return fmt.Errorf("convert: render %s: %w", name, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("convert: write %s: %w", path, err)
+	}
+	if err := validateFile(ctx, opts, path); err != nil {
+		opts.Ledger.Set(id, ledger.StatusFailed, err.Error())
+		return err
+	}
+	opts.Ledger.Set(id, ledger.StatusAppended, "", relPath(opts.BaseDir, path))
+	res.Files = append(res.Files, path)
+	return nil
+}
+
+// writeFileValidated writes a whole-file artifact and validates it.
+func writeFileValidated(ctx context.Context, opts Options, res *Result, path, content, label string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("convert: write %s: %w", label, err)
+	}
+	if err := validateFile(ctx, opts, path); err != nil {
+		return err
+	}
+	res.Files = append(res.Files, path)
+	return nil
+}
+
+// validateFile runs Tier A on one generated file. Only .go sources go
+// through the parser + gofmt check; other artifacts (e.g. the router
+// snippet for the user's transport layer) need only exist.
+func validateFile(ctx context.Context, opts Options, path string) error {
+	if !strings.HasSuffix(path, ".go") {
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("convert: %s missing", path)
+		}
+		return nil
+	}
+	res := opts.Validator.Syntax(path)
+	if !res.OK {
+		return fmt.Errorf("convert: %s: %s", path, strings.Join(res.Errors, "; "))
+	}
+	return nil
+}
+
+// addMap records the unit's conversion-map entries (§4.6).
+func addMap(opts Options, res *Result, u plan.Unit, targets []string) {
+	src := u.SourceFile
+	if src == "" {
+		src = opts.Plan.Source
+	}
+	span := ""
+	if u.SourceLines != "" {
+		span = " (L" + u.SourceLines + ")"
+	}
+	for _, t := range targets {
+		opts.Ledger.AddMap(fmt.Sprintf("%s :: %s%s", filepath.Base(src), u.Name, span), t)
+	}
+}
+
+// absPath resolves a plan unit's target path (an import path) to a file on
+// disk under the run's base directory: the module's first segment maps to
+// the base itself, so the same relative layout holds for the real target
+// service and the staged fallback.
+func (o Options) absPath(base, targetPath string) (string, error) {
+	parts := strings.SplitN(targetPath, "/", 2)
+	rel := targetPath
+	if len(parts) == 2 {
+		rel = parts[1]
+	}
+	return filepath.Join(base, rel), nil
+}
+
+func relPath(base, path string) string {
+	if r, err := filepath.Rel(base, path); err == nil && !strings.HasPrefix(r, "..") {
+		return r
+	}
+	return path
+}

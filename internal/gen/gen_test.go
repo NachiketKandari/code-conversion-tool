@@ -80,13 +80,12 @@ func TestGenModels(t *testing.T) {
 		"type NavListResponse struct",
 		"NavDate string `json:\"FML_MF_NAV_DATE,omitempty\"`",
 		"type NavDetails struct",
-		"MfNavCompCd sql.NullString `db:\"MF_NAV_COMP_CD\"`",
-		"MfSchDesc sql.NullString `db:\"MF_SCH_DESC\"`",
+		// gofmt column-aligns struct tags, so name and tag are asserted apart.
+		"MfNavCompCd", "MfSchDesc", "db:\"MF_NAV_COMP_CD\"", "db:\"MF_SCH_DESC\"",
 		"type NavHistoryDetail struct",
-		"CFromDate sql.NullString `db:\"C_FROM_DATE\"`",
-		"CToDate sql.NullString `db:\"C_TO_DATE\"`",
+		"CFromDate", "CToDate", "db:\"C_FROM_DATE\"", "db:\"C_TO_DATE\"",
 		"type D2uActive struct",
-		"CActiveFlag sql.NullString `db:\"C_ACTIVE_FLAG\"`",
+		"CActiveFlag", "db:\"C_ACTIVE_FLAG\"",
 		"import \"database/sql\"",
 	} {
 		if !strings.Contains(models, want) {

@@ -68,10 +68,10 @@ func main() {
 			os.Exit(1)
 		}
 	case "convert":
-		log.Error("command not yet implemented", "command", rest[0], "phase", "Phase 5")
-		fmt.Fprintf(os.Stderr, "convert is planned for Phase 5 — not yet implemented\n\n")
-		printUsage()
-		os.Exit(1)
+		if err := runConvert(ctx, rest[1:]); err != nil {
+			log.Error("convert failed", "error", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Printf("tuxgo version %s\n", version)
 	case "help", "-h", "--help":
@@ -173,7 +173,8 @@ Available Commands:
                inventory, FML ops, external fns) as JSON
   plan         Generate the deterministic decomposition plan from the IR + the
                user's endpoint mapping (plan.json/plan.md in the ledger dir)
-  convert      Execute end-to-end conversion into target Go service (planned, Phase 5)
+  convert      Execute the conversion plan into the target Go service (or staged
+               output when the target is absent), resumable via the ledger
   version      Print version information
 
 `)
@@ -183,7 +184,7 @@ Available Commands:
 // arguments so flags may appear before or after the target path — the stdlib
 // flag package otherwise stops parsing at the first positional.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true}
+	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {

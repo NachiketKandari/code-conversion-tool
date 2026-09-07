@@ -7,6 +7,7 @@ package gen
 
 import (
 	"fmt"
+	"go/format"
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
@@ -370,7 +371,21 @@ func hasTimeParam(params []templates.ParamSpec) bool {
 	return false
 }
 
-// render executes one embedded template.
+// render executes one embedded template. Go artifacts (anything starting
+// with a package clause) are normalized with go/format so generated files
+// pass the Tier-A gofmt check byte-for-byte; the router snippet (not Go)
+// passes through untouched.
 func render(id templates.ID, data any) (string, error) {
-	return templates.NewEmbeddedProvider().Render(id, data)
+	out, err := templates.NewEmbeddedProvider().Render(id, data)
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(out, "package ") {
+		formatted, ferr := format.Source([]byte(out))
+		if ferr != nil {
+			return "", fmt.Errorf("gen: %s output does not parse: %w", id, ferr)
+		}
+		out = string(formatted)
+	}
+	return out, nil
 }
