@@ -34,7 +34,7 @@ run:
 models:                      # OpenAI-compatible profiles, same client seam (R1)
   - name: isec-vllm          # production generation endpoint (default)
     provider: openai-compatible
-    model: qwen3-vl-30b-a3b
+    model: /opt/vllm/models/qwen3-VL-30B-A3B-Instruct-AWQ   # the exact served id (pr-review parity)
     apiBase: http://10.213.190.86:8002/v1
     apiKeyEnv: ISEC_API_KEY
     requestOptions:

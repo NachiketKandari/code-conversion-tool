@@ -266,7 +266,12 @@ func (c *openaiClient) post(ctx context.Context, body []byte) (io.ReadCloser, bo
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if c.endpoint.APIKey != "" {
+		// Same signature pr-review uses against the isec vLLM endpoint:
+		// both header shapes together (client.go:132-133 there). OpenRouter
+		// reads Bearer; isec reads api-key — sending both is harmless and
+		// keeps the two tools on one working credential convention.
 		req.Header.Set("Authorization", "Bearer "+c.endpoint.APIKey)
+		req.Header.Set("api-key", c.endpoint.APIKey)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

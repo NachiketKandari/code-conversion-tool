@@ -17,7 +17,7 @@ func TestDefaultIsValidAndRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("default route failed: %v", err)
 	}
-	if m.Name != "isec-vllm" || m.Model != "qwen3-vl-30b-a3b" {
+	if m.Name != "isec-vllm" || m.Model != "/opt/vllm/models/qwen3-VL-30B-A3B-Instruct-AWQ" {
 		t.Errorf("default profile = %+v", m)
 	}
 	if _, err := cfg.Route("nope"); err == nil {

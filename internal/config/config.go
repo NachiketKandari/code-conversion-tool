@@ -45,9 +45,11 @@ func Default() *Config {
 		},
 		Models: []Model{
 			{
-				Name:      "isec-vllm",
-				Provider:  "openai-compatible",
-				Model:     "qwen3-vl-30b-a3b",
+				Name:     "isec-vllm",
+				Provider: "openai-compatible",
+				// The exact served model id pr-review uses against this
+				// endpoint — vLLM answers only the name it was launched with.
+				Model:     "/opt/vllm/models/qwen3-VL-30B-A3B-Instruct-AWQ",
 				APIBase:   "http://10.213.190.86:8002/v1",
 				APIKeyEnv: "ISEC_API_KEY",
 				Options:   RequestOptions{Temperature: ptr(0.1), MaxTokens: 4000, Stream: true, Timeout: Duration(120 * time.Second), Retries: 3},
