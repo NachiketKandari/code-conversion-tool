@@ -136,6 +136,10 @@ func TestValidationErrors(t *testing.T) {
 		"bad apiBase":  func(c *Config) { c.Models[0].APIBase = "10.0.0.1:8002" },
 		"bad elision":  func(c *Config) { c.Elision.Mode = "aggressive" },
 		"zero workers": func(c *Config) { c.Concurrency.Workers = 0 },
+		"bad compile":  func(c *Config) { c.ValidateCfg.Compile = "sometimes" },
+		"always without target": func(c *Config) {
+			c.ValidateCfg.Compile = "always"
+		},
 	}
 	for name, mutate := range cases {
 		cfg := Default()

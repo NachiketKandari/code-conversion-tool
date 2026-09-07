@@ -62,9 +62,14 @@ func main() {
 			log.Error("extract failed", "error", err)
 			os.Exit(1)
 		}
-	case "plan", "convert":
+	case "plan":
+		if err := runPlan(ctx, rest[1:]); err != nil {
+			log.Error("plan failed", "error", err)
+			os.Exit(1)
+		}
+	case "convert":
 		log.Error("command not yet implemented", "command", rest[0], "phase", "Phase 5")
-		fmt.Fprintf(os.Stderr, "%s is planned for Phase 5 — not yet implemented\n\n", rest[0])
+		fmt.Fprintf(os.Stderr, "convert is planned for Phase 5 — not yet implemented\n\n")
 		printUsage()
 		os.Exit(1)
 	case "version":
@@ -166,7 +171,8 @@ Available Commands:
   analyze      Analyze Pro*C/Tuxedo complexity (+1/+5/+10/+20 rubric) and export CSV
   extract      Extract the deterministic IR (query units + QueryType marking, condition
                inventory, FML ops, external fns) as JSON
-  plan         Generate decomposition plan for a .pc file (planned, Phase 5)
+  plan         Generate the deterministic decomposition plan from the IR + the
+               user's endpoint mapping (plan.json/plan.md in the ledger dir)
   convert      Execute end-to-end conversion into target Go service (planned, Phase 5)
   version      Print version information
 
@@ -177,7 +183,7 @@ Available Commands:
 // arguments so flags may appear before or after the target path — the stdlib
 // flag package otherwise stops parsing at the first positional.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true}
+	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {

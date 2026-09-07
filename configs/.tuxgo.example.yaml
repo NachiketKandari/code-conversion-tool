@@ -64,11 +64,23 @@ concurrency:
 
 validate:                    # gofmt → go build → go vet → go test loop (G6)
   maxRetries: 3              # bounded retries with trimmed errors fed back
+  compile: auto              # Tier-B compile/run checks (plan-conversion §2):
+                             #   auto   — run when paths.mainGo resolves, degrade
+                             #            to syntax-only (WARN) when absent
+                             #   always — require the target (error if missing)
+                             #   never  — skip Tier B even when it could run
+  run: false                 # smoke `go run .` after a green Tier B
 
 paths:
   tux: tux/                    # the .pc corpus to convert (OQ19 default: "convert this .pc" locates it here)
   target: ../existing-go-service # existing service: models/db/controller/handler — generated code plugs in (R8)
+  mainGo: ""                   # a file inside the target Go module (e.g. <target>/main.go):
+                               # the Tier-B anchor — validation walks up to its go.mod.
+                               # Empty = the target service is absent on this machine;
+                               # conversion then stages output under paths.staged and
+                               # validates syntax-only (the two-laptop constraint)
   logs: conversion_logs/logs   # unified slog JSONL stream (Q6)
   audit: conversion_logs/audit  # per-run audit trail (§4.7)
   ledger: conversion_logs/ledger # unit status + source→target conversion map (§4.6, Phase 5)
   state: conversion_logs/state   # IR cache, re-indexed on mtime (Phase 2)
+  staged: conversion_logs/staged  # generated-code staging when paths.mainGo is empty

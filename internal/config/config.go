@@ -21,10 +21,12 @@ func DefaultPaths() Paths {
 	return Paths{
 		Tux:    "tux/",
 		Target: "../existing-go-service",
+		MainGo: "",
 		Logs:   "conversion_logs/logs",
 		Audit:  "conversion_logs/audit",
 		Ledger: "conversion_logs/ledger",
 		State:  "conversion_logs/state",
+		Staged: "conversion_logs/staged",
 	}
 }
 
@@ -60,7 +62,7 @@ func Default() *Config {
 		},
 		Elision:     Elision{Mode: "safe"},
 		Concurrency: Concurrency{Workers: 1},
-		ValidateCfg: ValidateCfg{MaxRetries: 3},
+		ValidateCfg: ValidateCfg{MaxRetries: 3, Compile: "auto"},
 		Paths:       DefaultPaths(),
 	}
 }
@@ -224,17 +226,30 @@ type Concurrency struct {
 	Workers int `yaml:"workers"`
 }
 
-// Validate configures the bounded gofmt/build/vet/test retry loop (G6).
+// ValidateCfg configures the bounded gofmt/build/vet/test retry loop (G6)
+// and its two tiers (plan-conversion §2): Tier A (parse + gofmt) always runs;
+// Tier B (build/vet/test in the target module) runs when paths.mainGo
+// resolves — compile: auto follows presence, always errors when the target
+// is missing, never skips Tier B even when it could run.
 type ValidateCfg struct {
-	MaxRetries int `yaml:"maxRetries"`
+	MaxRetries int    `yaml:"maxRetries"`
+	Compile    string `yaml:"compile"`
+	Run        bool   `yaml:"run"`
 }
 
 // Paths are the run's artifact roots, relative to the config file.
 type Paths struct {
 	Tux    string `yaml:"tux"`
 	Target string `yaml:"target"`
+	// MainGo is the target service's main.go (or any file inside the module)
+	// — the anchor Tier-B validation walks up from to the go.mod. Empty means
+	// the target service is absent on this machine: conversion degrades to
+	// syntax-only validation and stages generated code under paths.staged
+	// (the two-laptop constraint, plan-conversion §2).
+	MainGo string `yaml:"mainGo"`
 	Logs   string `yaml:"logs"`
 	Audit  string `yaml:"audit"`
 	Ledger string `yaml:"ledger"`
 	State  string `yaml:"state"`
+	Staged string `yaml:"staged"`
 }

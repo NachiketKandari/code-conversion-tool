@@ -87,12 +87,21 @@ func (c *Config) Validate() error {
 	if c.ValidateCfg.MaxRetries < 0 {
 		return fmt.Errorf("validate.maxRetries must not be negative, got %d", c.ValidateCfg.MaxRetries)
 	}
+	switch c.ValidateCfg.Compile {
+	case "auto", "always", "never":
+	default:
+		return fmt.Errorf("validate.compile %q: only \"auto\", \"always\" or \"never\"", c.ValidateCfg.Compile)
+	}
+	if c.ValidateCfg.Compile == "always" && strings.TrimSpace(c.Paths.MainGo) == "" {
+		return fmt.Errorf("validate.compile \"always\" requires paths.mainGo (the target module anchor)")
+	}
 
 	for _, p := range []struct{ name, v string }{
 		{"paths.tux", c.Paths.Tux},
 		{"paths.logs", c.Paths.Logs},
 		{"paths.audit", c.Paths.Audit},
 		{"paths.state", c.Paths.State},
+		{"paths.staged", c.Paths.Staged},
 	} {
 		if strings.TrimSpace(p.v) == "" {
 			return fmt.Errorf("%s must not be empty", p.name)
