@@ -158,6 +158,12 @@ type Batchpy struct {
 	ChunkSize int `yaml:"chunkSize"`
 	// OutDir is the default output directory for generated modules.
 	OutDir string `yaml:"outDir"`
+	// FileFilter scopes directory targets to .pc/.pcf files whose base name
+	// contains the substring (case-insensitive) — e.g. "bat_mf_" picks only
+	// that family. Empty (default) converts every file in the directory.
+	// Applies only when the target is a directory; an explicitly passed file
+	// always converts.
+	FileFilter string `yaml:"fileFilter"`
 }
 
 // DefaultBatchpy returns the reference-codebase conventions (the
@@ -331,6 +337,12 @@ type Convert struct {
 	Input string `yaml:"input"`
 	// Mapping is the user endpoint-mapping YAML used when -mapping is absent.
 	Mapping string `yaml:"mapping"`
+	// FileFilter scopes directory targets to .pc/.pcf files whose base name
+	// contains the substring (case-insensitive) — e.g. "mf_" picks up
+	// SVC_MF_*.pc and mf_*.pc alike. Empty (default) converts every file in
+	// the directory. Applies only when the target is a directory; an
+	// explicitly passed file always converts.
+	FileFilter string `yaml:"fileFilter"`
 }
 
 // ValidateCfg configures the bounded gofmt/build/vet/test retry loop (G6)

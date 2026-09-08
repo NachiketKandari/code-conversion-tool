@@ -39,18 +39,20 @@ type serviceOutcome struct {
 // runConvertFanout converts every entry file as its own service in parallel.
 // mappingPath must be a directory of per-service mapping yamls (each
 // declaring source: <entry file>); baseRoot is the run's output base and
-// every service writes under baseRoot/<service>.
-func runConvertFanout(ctx context.Context, w *convertWiring, target string, mains []*ir.File, files []*ir.File, mappingPath, baseRoot, degrade string) error {
+// every service writes under baseRoot/<service>. excluded carries the entry
+// basenames convert.fileFilter dropped — mappings declaring those sources
+// are deliberate skips (WARN), not orphan drift.
+func runConvertFanout(ctx context.Context, w *convertWiring, target string, mains []*ir.File, files []*ir.File, excluded []string, mappingPath, baseRoot, degrade string) error {
 	log := telemetry.Log(ctx)
 	if fi, err := os.Stat(mappingPath); err != nil || !fi.IsDir() {
-		return fmt.Errorf("convert: %s holds %d services — pass a mapping directory (one yaml per service, each with source: <entry file>), not %q",
+		return fmt.Errorf("convert: %s holds %d service(s) (fileFilter may exclude entries) — pass a mapping directory (one yaml per service, each with source: <entry file>), not %q",
 			target, len(mains), mappingPath)
 	}
 	bySource, err := loadMappingDir(mappingPath)
 	if err != nil {
 		return err
 	}
-	mappings, err := matchMappings(target, mains, bySource)
+	mappings, err := matchMappings(ctx, target, mains, bySource, excluded)
 	if err != nil {
 		return err
 	}
@@ -150,8 +152,14 @@ func loadMappingDir(dir string) (map[string]mappingSource, error) {
 // matchMappings pairs every entry file with its mapping. Both directions
 // are strict: an entry without a mapping is an error (endpoints are
 // user-specified, never invented), and a mapping whose source matches no
-// entry is drift to surface, not skip.
-func matchMappings(target string, mains []*ir.File, bySource map[string]mappingSource) ([]*plan.Mapping, error) {
+// entry is drift to surface, not skip — except sources excluded by
+// convert.fileFilter, which are deliberate skips (WARN).
+func matchMappings(ctx context.Context, target string, mains []*ir.File, bySource map[string]mappingSource, excluded []string) ([]*plan.Mapping, error) {
+	log := telemetry.Log(ctx)
+	excludedSet := make(map[string]bool, len(excluded))
+	for _, e := range excluded {
+		excludedSet[e] = true
+	}
 	matched := make([]*plan.Mapping, 0, len(mains))
 	used := make(map[string]bool, len(mains))
 	for _, main := range mains {
@@ -166,9 +174,15 @@ func matchMappings(target string, mains []*ir.File, bySource map[string]mappingS
 	}
 	var orphans []string
 	for key, ms := range bySource {
-		if !used[key] {
-			orphans = append(orphans, filepath.Base(ms.file))
+		if used[key] {
+			continue
 		}
+		if excludedSet[key] {
+			log.Warn("mapping skipped — its source entry is excluded by convert.fileFilter",
+				"mapping", filepath.Base(ms.file), "source", key)
+			continue
+		}
+		orphans = append(orphans, filepath.Base(ms.file))
 	}
 	if len(orphans) > 0 {
 		sort.Strings(orphans)

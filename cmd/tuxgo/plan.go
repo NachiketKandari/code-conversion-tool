@@ -62,7 +62,7 @@ func runPlan(ctx context.Context, args []string) error {
 		"endpoints", len(mapping.Endpoints),
 		"db_method_pins", len(mapping.DBMethods))
 
-	files, mains, err := extractPlanIR(target, cfg, *fragment)
+	files, mains, _, err := extractPlanIR(ctx, target, cfg, *fragment)
 	if err != nil {
 		return err
 	}
@@ -119,21 +119,21 @@ func runPlan(ctx context.Context, args []string) error {
 // files plus every file with a Tuxedo entry. Callers enforce their own
 // service contract: runPlan requires exactly one entry; runConvert fans out
 // one worker per entry when the directory holds several.
-func extractPlanIR(target string, cfg *config.Config, forceFragment bool) ([]*ir.File, []*ir.File, error) {
+func extractPlanIR(ctx context.Context, target string, cfg *config.Config, forceFragment bool) ([]*ir.File, []*ir.File, []string, error) {
 	fi, err := os.Stat(target)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cannot access target path %s: %w", target, err)
+		return nil, nil, nil, fmt.Errorf("cannot access target path %s: %w", target, err)
 	}
 	if !fi.IsDir() {
 		main, err := ir.ExtractFileOpts(target, irOptions(cfg, forceFragment))
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return []*ir.File{main}, []*ir.File{main}, nil
+		return []*ir.File{main}, []*ir.File{main}, nil, nil
 	}
 	files, err := ir.ExtractDirOpts(target, irOptions(cfg, false))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	var mains []*ir.File
 	for _, f := range files {
@@ -142,9 +142,32 @@ func extractPlanIR(target string, cfg *config.Config, forceFragment bool) ([]*ir
 		}
 	}
 	if len(mains) == 0 {
-		return nil, nil, fmt.Errorf("plan: no .pc file in %s declares a Tuxedo entry function", target)
+		return nil, nil, nil, fmt.Errorf("plan: no .pc file in %s declares a Tuxedo entry function", target)
 	}
-	return files, mains, nil
+	// convert.fileFilter scopes which entries (services) the run targets —
+	// the full file set stays ingested as the fn-resolution pool, so helper
+	// libs never need to match the filter (filtering them out would
+	// silently misclassify their SQL-bearing fns, severity-F1's class of
+	// failure).
+	excluded := []string{}
+	if filter := cfg.Convert.FileFilter; strings.TrimSpace(filter) != "" {
+		needle := strings.ToLower(filter)
+		var selected []*ir.File
+		for _, m := range mains {
+			if strings.Contains(strings.ToLower(filepath.Base(m.Path)), needle) {
+				selected = append(selected, m)
+			} else {
+				excluded = append(excluded, strings.ToLower(filepath.Base(m.Path)))
+			}
+		}
+		if len(selected) == 0 {
+			return nil, nil, nil, fmt.Errorf("plan: no Tuxedo entry in %s matches convert.fileFilter %q", target, filter)
+		}
+		telemetry.Log(ctx).Info("convert.fileFilter applied",
+			"filter", filter, "entries_selected", len(selected), "entries_excluded", len(excluded), "files_ingested", len(files))
+		mains = selected
+	}
+	return files, mains, excluded, nil
 }
 
 func countKind(p *plan.Plan, k plan.Kind) int {

@@ -45,7 +45,7 @@ func TestExtractPlanIRPartitioning(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "SVC_BETA.pc"), fmt.Sprintf(svcEntrySrc, "SVC_BETA", "beta"))
 	writeFile(t, filepath.Join(dir, "fn_helper.pc"), "long fn_helper(void)\n{\n    return 1;\n}\n")
 
-	files, mains, err := extractPlanIR(dir, cfg, false)
+	files, mains, _, err := extractPlanIR(context.Background(), dir, cfg, false)
 	if err != nil {
 		t.Fatalf("extractPlanIR(dir): %v", err)
 	}
@@ -62,13 +62,13 @@ func TestExtractPlanIRPartitioning(t *testing.T) {
 	// No-entry dir stays a hard error.
 	empty := t.TempDir()
 	writeFile(t, filepath.Join(empty, "fn_only.pc"), "long fn_only(void)\n{\n    return 1;\n}\n")
-	if _, _, err := extractPlanIR(empty, cfg, false); err == nil {
+	if _, _, _, err := extractPlanIR(context.Background(), empty, cfg, false); err == nil {
 		t.Error("expected no-entry dir to error")
 	}
 
 	// File mode: exactly one service.
 	file := filepath.Join(dir, "SVC_ALPHA.pc")
-	files, mains, err = extractPlanIR(file, cfg, false)
+	files, mains, _, err = extractPlanIR(context.Background(), file, cfg, false)
 	if err != nil {
 		t.Fatalf("extractPlanIR(file): %v", err)
 	}
@@ -180,7 +180,7 @@ func TestMatchMappingsStrict(t *testing.T) {
 		{Path: filepath.Join("corpus", "SVC_DEMO_TWO.pc"), Entry: "SVC_DEMO_TWO"},
 	}
 
-	matched, err := matchMappings("corpus", mains, bySource)
+	matched, err := matchMappings(context.Background(), "corpus", mains, bySource, nil)
 	if err != nil {
 		t.Fatalf("matchMappings: %v", err)
 	}
@@ -189,14 +189,21 @@ func TestMatchMappingsStrict(t *testing.T) {
 	}
 
 	// A mapping whose source names no entry is drift — surfaced, not skipped.
-	_, err = matchMappings("corpus", mains[:1], bySource)
+	_, err = matchMappings(context.Background(), "corpus", mains[:1], bySource, nil)
 	if err == nil || !strings.Contains(err.Error(), "no entry file") {
 		t.Errorf("orphan mappings: err = %v, want 'no entry file'", err)
 	}
 
+	// ...unless the source was excluded by convert.fileFilter — a deliberate
+	// skip, never orphan drift.
+	_, err = matchMappings(context.Background(), "corpus", mains[:1], bySource, []string{"svc_demo_two.pc"})
+	if err != nil {
+		t.Errorf("filter-excluded mapping: err = %v, want a skip", err)
+	}
+
 	// An entry without a mapping is a hard error (endpoints are user data).
 	delete(bySource, "svc_demo_two.pc")
-	_, err = matchMappings("corpus", mains, bySource)
+	_, err = matchMappings(context.Background(), "corpus", mains, bySource, nil)
 	if err == nil || !strings.Contains(err.Error(), "no mapping for entry") {
 		t.Errorf("unmapped entry: err = %v, want 'no mapping for entry'", err)
 	}

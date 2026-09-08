@@ -104,8 +104,15 @@ func Build(opts Options) (*Plan, error) {
 	cond := func(e Endpoint) (*ir.Condition, error) {
 		c, ok := condBy[e.Condition]
 		if !ok {
-			return nil, fmt.Errorf("plan: endpoint %s maps condition %d — inventory has %d conditions",
+			err := fmt.Errorf("plan: endpoint %s maps condition %d — inventory has %d conditions",
 				e.Name, e.Condition, len(opts.Main.Conditions))
+			if n := len(opts.Main.Unbalanced); n > 0 {
+				// The condition inventory may be short because the parse
+				// was truncated (severity F3) — say so, never a bare count.
+				err = fmt.Errorf("%w — the file carries %d unbalanced region(s) (%s), so the parse may be truncated",
+					err, n, unbalancedSummary(opts.Main.Unbalanced))
+			}
+			return nil, err
 		}
 		return c, nil
 	}
@@ -421,6 +428,16 @@ func lineSpan(from, to int) string {
 		return fmt.Sprintf("%d", from)
 	}
 	return fmt.Sprintf("%d-%d", from, to)
+}
+
+// unbalancedSummary renders the IR's unbalanced regions as a compact
+// "kind@line" list for error messages (severity F3).
+func unbalancedSummary(u []ir.Unbalanced) string {
+	parts := make([]string, 0, len(u))
+	for _, r := range u {
+		parts = append(parts, fmt.Sprintf("%s@%d", r.Kind, r.Line))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // branchSource slices the 1-based inclusive line range out of src.

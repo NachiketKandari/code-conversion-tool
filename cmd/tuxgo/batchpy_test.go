@@ -74,3 +74,35 @@ func TestBatchpyDirConcurrentDistinct(t *testing.T) {
 		}
 	}
 }
+
+// TestBatchpyWrongPipelineGuard pins severity F4: a Tuxedo service file
+// (SVC_* entry) fed to the batch pipeline is skipped with a visible reason —
+// no plausible-looking empty module, no run failure.
+func TestBatchpyWrongPipelineGuard(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"BAT_DEMO_REJECT.pc"} {
+		src, err := os.ReadFile(filepath.Join("..", "..", "testdata", "batch", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, name), string(src))
+	}
+	svcSrc, err := os.ReadFile(filepath.Join("..", "..", "testdata", "adversarial", "BAT_ADV_SVC_FILE.pc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "ADV_SERVICE.pc"), string(svcSrc))
+
+	out := filepath.Join(t.TempDir(), "out")
+	cfgPath := batchpyConfig(t, dir, out, 2)
+
+	if err := runBatchpy(context.Background(), []string{"-config", cfgPath, "-no-llm"}); err != nil {
+		t.Fatalf("wrong-pipeline skip must not fail the run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "adv_service.py")); err == nil {
+		t.Error("service file must not produce a batch module")
+	}
+	if _, err := os.Stat(filepath.Join(out, "bat_demo_reject.py")); err != nil {
+		t.Errorf("real batch module missing: %v", err)
+	}
+}

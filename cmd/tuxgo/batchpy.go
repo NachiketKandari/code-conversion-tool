@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -94,7 +95,7 @@ func runBatchpy(ctx context.Context, args []string) error {
 		return fmt.Errorf("batchpy: create output dir %s: %w", out, err)
 	}
 
-	paths, err := batchTargets(target)
+	paths, err := batchTargets(ctx, target, cfg.Batchpy.FileFilter)
 	if err != nil {
 		return err
 	}
@@ -136,6 +137,7 @@ func runBatchpy(ctx context.Context, args []string) error {
 		plan  *pyplan.Plan
 		name  string
 		start time.Time
+		skip  string
 		err   error
 	}
 	results := make([]fileResult, len(paths))
@@ -152,6 +154,11 @@ func runBatchpy(ctx context.Context, args []string) error {
 			res, plan, name, err := convertBatchFile(ctx, path, b, pygen.Options{
 				NoLLM: !llmEnabled || client == nil, Client: client, Budget: bg, MaxRetries: cfg.ValidateCfg.MaxRetries,
 			})
+			var wp *wrongPipelineError
+			if errors.As(err, &wp) {
+				results[i] = fileResult{path: path, skip: err.Error(), start: start}
+				return
+			}
 			results[i] = fileResult{path: path, res: res, plan: plan, name: name, start: start, err: err}
 		}(i, path)
 	}
@@ -163,7 +170,7 @@ func runBatchpy(ctx context.Context, args []string) error {
 	// error before anything is written (deterministic-first, loud).
 	seen := map[string]string{}
 	for _, r := range results {
-		if r.err != nil {
+		if r.err != nil || r.skip != "" {
 			continue
 		}
 		if prev, dup := seen[r.name]; dup {
@@ -173,8 +180,15 @@ func runBatchpy(ctx context.Context, args []string) error {
 	}
 
 	summary := 0
+	skipped := 0
 	var firstErr error
 	for _, r := range results {
+		if r.skip != "" {
+			log.Warn("wrong pipeline — file skipped (severity F4 guard)", "source", r.path, "reason", r.skip)
+			fmt.Printf("skipped: %s — %s\n", filepath.Base(r.path), r.skip)
+			skipped++
+			continue
+		}
 		if r.err != nil {
 			log.Error("batchpy file failed", "source", r.path, "error", r.err,
 				"duration_ms", time.Since(r.start).Milliseconds())
@@ -219,8 +233,21 @@ func runBatchpy(ctx context.Context, args []string) error {
 			fmt.Println("  python syntax:", res.PyDetail)
 		}
 	}
-	fmt.Printf("batchpy: %d module(s) written under %s — %d sql deviations total\n", len(paths), out, summary)
+	fmt.Printf("batchpy: %d module(s) written under %s — %d sql deviations total", len(paths)-skipped, out, summary)
+	if skipped > 0 {
+		fmt.Printf(", %d skipped", skipped)
+	}
+	fmt.Println()
 	return firstErr
+}
+
+// wrongPipelineError marks a Tuxedo service entry (SVC_*) fed to the batch
+// pipeline (severity F4) — a visible skip, never a plausible-looking empty
+// module.
+type wrongPipelineError struct{ entry string }
+
+func (e *wrongPipelineError) Error() string {
+	return fmt.Sprintf("%s is a Tuxedo service entry, not a batch program — wrong pipeline; convert it with `tuxgo convert`", e.entry)
 }
 
 // convertBatchFile runs the batchpy pipeline for one .pc file — scan →
@@ -242,6 +269,15 @@ func convertBatchFile(ctx context.Context, path string, b config.Batchpy, gOpts 
 	}
 
 	flow := batchflow.Build(irf, facts, string(src))
+	if strings.HasPrefix(flow.Entry, "SVC_") {
+		// Wrong-pipeline guard (severity F4): the flow entry fell back to a
+		// Tuxedo service function — no batch main exists here.
+		return pygen.Result{}, nil, "", &wrongPipelineError{entry: flow.Entry}
+	}
+	if len(flow.Queries) == 0 {
+		telemetry.Log(ctx).Warn("batch carries no SQL — the module will have no constants and no DAL (degenerate but visible)",
+			"source", path)
+	}
 	plan := pyplan.Build(flow, pyplan.Options{
 		Shape: b.Shape, DMLLoop: b.DMLLoop, ChunkSize: b.ChunkSize,
 		LoggerPrefix: b.LoggerPrefix, Entrypoint: b.Entrypoint,
@@ -262,7 +298,10 @@ func convertBatchFile(ctx context.Context, path string, b config.Batchpy, gOpts 
 }
 
 // batchTargets resolves the input to a list of .pc/.pcf files (file or dir).
-func batchTargets(target string) ([]string, error) {
+// A directory target is scoped by the batchpy.fileFilter yaml when set —
+// base names containing the substring (case-insensitive) survive; an empty
+// filter keeps every file. An explicitly passed file always converts.
+func batchTargets(ctx context.Context, target string, filter string) ([]string, error) {
 	fi, err := os.Stat(target)
 	if err != nil {
 		return nil, fmt.Errorf("batchpy: cannot access %s: %w", target, err)
@@ -283,7 +322,25 @@ func batchTargets(target string) ([]string, error) {
 		}
 		return nil
 	})
-	return paths, err
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(filter) != "" {
+		needle := strings.ToLower(filter)
+		var kept []string
+		for _, p := range paths {
+			if strings.Contains(strings.ToLower(filepath.Base(p)), needle) {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			return nil, fmt.Errorf("batchpy: no .pc/.pcf file in %s matches batchpy.fileFilter %q", target, filter)
+		}
+		telemetry.Log(ctx).Info("batchpy.fileFilter applied",
+			"filter", filter, "matched", len(kept), "of", len(paths))
+		paths = kept
+	}
+	return paths, nil
 }
 
 // archiveBatchArtifacts writes the module, its plan, and its retention

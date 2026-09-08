@@ -83,6 +83,12 @@ convert:                     # defaults for plan/convert so repeat runs need no 
                              # positional target (e.g. tux/SVC_DEMO_LIST.pc)
   mapping: ""                # endpoint-mapping YAML used when -mapping is absent
                              # (e.g. nav.mapping.yaml); explicit CLI flags override both
+  fileFilter: ""             # directory targets only: convert only the entries whose file
+                             # name contains this substring, case-insensitively — e.g. "mf_"
+                             # picks up SVC_MF_*.pc (your services) and skips the rest.
+                             # Empty (default) = every entry. Helper/fn libs never need to
+                             # match (they stay in the resolution pool); a dir-mode mapping
+                             # for an excluded entry is skipped with a warning, not an error
 
 validate:                    # gofmt → go build → go vet → go test loop (G6)
   maxRetries: 3              # bounded retries with trimmed errors fed back
@@ -96,6 +102,9 @@ validate:                    # gofmt → go build → go vet → go test loop (G
 batchpy:                     # batch→Python conventions (PRD-2026-09-08 BP-7)
   input: ""                  # .pc/.pcf file or directory converted when the CLI passes no
                              # positional target (mirrors convert.input for the Go path)
+  fileFilter: ""             # directory targets only: convert only the batches whose file
+                             # name contains this substring, case-insensitively (e.g. "bat_mf_").
+                             # Empty (default) = every batch in the directory
   wrapperModule: core.db_router  # the generated import of the db-router wrapper
   routerClass: DatabaseRouter    # the wrapper class + DbMode modes below
   readMode: DbMode.READ          # connection mode for SELECTs

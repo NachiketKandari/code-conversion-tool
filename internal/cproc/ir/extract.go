@@ -251,6 +251,9 @@ func fnRanges(facts *scanner.SourceFacts) map[string]fnRange {
 func build(facts *scanner.SourceFacts, opts Options) *File {
 	facts = commentLiveFacts(facts)
 	f := &File{Path: facts.Path, Fragment: facts.Fragment}
+	for _, u := range facts.Unbalanced {
+		f.Unbalanced = append(f.Unbalanced, Unbalanced{Kind: u.Kind, Line: u.StartLine, Col: u.StartCol})
+	}
 	for _, fn := range facts.Functions {
 		f.Functions = append(f.Functions, fn.Name)
 	}
@@ -449,6 +452,13 @@ func buildTPCalls(facts *scanner.SourceFacts, opts Options, buffers []BufferRole
 					}
 				}
 			}
+		}
+		// Identified buffers but an empty contract — no FML ops in the
+		// call's window on either side (severity F5): the contract is
+		// silently empty, so the site degrades to an ambiguous fact the
+		// placeholder must state, never an implicit guess.
+		if len(tp.SendFML) == 0 && len(tp.RecvFML) == 0 {
+			tp.Ambiguous = true
 		}
 		out = append(out, tp)
 	}
