@@ -30,6 +30,14 @@ func TestExtractNavGolden(t *testing.T) {
 		t.Errorf("functions = %v", f.Functions)
 	}
 
+	// Branching factor (doubling rule): 75 if/else-if headers, Σ 2^nest = 142.
+	if f.BranchCount != 75 {
+		t.Errorf("branch_count = %d, want 75", f.BranchCount)
+	}
+	if f.BranchingFactor != 142 {
+		t.Errorf("branching_factor = %d, want 142", f.BranchingFactor)
+	}
+
 	// --- Condition inventory (§4.2.8): H / F / I / default, in order. ---
 	wantConds := []struct {
 		kind   string
@@ -283,8 +291,58 @@ func TestTemplateMirror(t *testing.T) {
 		TemplateSelectMulti != string(templates.DBMethodSelectMulti) ||
 		TemplateInsertTx != string(templates.DBMethodInsertTx) ||
 		TemplateUpdateTx != string(templates.DBMethodUpdateTx) ||
-		TemplateDeleteTx != string(templates.DBMethodDeleteTx) {
+		TemplateDeleteTx != string(templates.DBMethodDeleteTx) ||
+		TemplateMerge != string(templates.DBMethodMerge) {
 		t.Fatal("ir template ids drifted from templates.ID constants")
+	}
+}
+
+// TestExtractMergeGolden pins the MERGE rubric on the merge fixture: one
+// MERGE query unit with the DML template, target table after MERGE INTO,
+// named binds — plus the nesting math over its if/else chain (else bodies
+// never nest; the nested sqlcode checks double once).
+func TestExtractMergeGolden(t *testing.T) {
+	f, err := ExtractFile(filepath.Join("..", "..", "..", "testdata", "merge", "SVC_DEMO_MERGE.pc"))
+	if err != nil {
+		t.Fatalf("ExtractFile failed: %v", err)
+	}
+
+	if f.Entry != "SVC_DEMO_MERGE" {
+		t.Errorf("entry = %q", f.Entry)
+	}
+	if f.BranchCount != 3 || f.BranchingFactor != 4 {
+		t.Errorf("branch count/factor = %d/%d, want 3/4 (1 + 1 + 2)", f.BranchCount, f.BranchingFactor)
+	}
+
+	if len(f.Queries) != 1 {
+		t.Fatalf("queries = %d, want 1 (%v)", len(f.Queries), queryIDs(f))
+	}
+	q := f.Queries[0]
+	if q.ID != "q1" || q.Type != QueryMerge || q.TemplateID != TemplateMerge {
+		t.Errorf("query = %s/%s/%s, want q1/MERGE/%s", q.ID, q.Type, q.TemplateID, TemplateMerge)
+	}
+	if !strings.Contains(q.SQL, "MERGE INTO DEMO_ACCOUNTS") {
+		t.Errorf("merge SQL body missing: %q", q.SQL)
+	}
+	if !reflect.DeepEqual(q.Tables, []string{"DEMO_ACCOUNTS"}) {
+		t.Errorf("tables = %v, want [DEMO_ACCOUNTS]", q.Tables)
+	}
+	if !reflect.DeepEqual(q.Binds, []string{"account_id", "balance"}) || q.BindArity != 2 {
+		t.Errorf("binds/arity = %v/%d, want [account_id balance]/2", q.Binds, q.BindArity)
+	}
+
+	// Condition inventory: the top-level if/else chain — the MERGE lives in
+	// the default branch, the FML read in the preamble outside it.
+	if len(f.Conditions) != 2 {
+		t.Fatalf("conditions = %d, want 2", len(f.Conditions))
+	}
+	if f.Conditions[0].Kind != "if" || f.Conditions[0].IsDefault ||
+		f.Conditions[0].FlagVars == nil || len(f.Conditions[0].FlagVars) != 1 {
+		t.Errorf("condition 1 = %+v", f.Conditions[0])
+	}
+	c2 := f.Conditions[1]
+	if c2.Kind != "else" || !c2.IsDefault || !reflect.DeepEqual(c2.QueryIDs, []string{"q1"}) {
+		t.Errorf("condition 2 = %+v (want else, default, q1)", c2)
 	}
 }
 

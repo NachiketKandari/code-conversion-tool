@@ -11,6 +11,7 @@ const (
 	SQLInsert
 	SQLUpdate
 	SQLDelete
+	SQLMerge
 
 	// Cursor and Pro*C control operations (plumbing, not counted as separate queries)
 	SQLOpen
@@ -27,7 +28,7 @@ const (
 // IsQuery returns true if the SQLKind represents a logical database query.
 func (k SQLKind) IsQuery() bool {
 	switch k {
-	case SQLSelect, SQLDeclareCursor, SQLInsert, SQLUpdate, SQLDelete:
+	case SQLSelect, SQLDeclareCursor, SQLInsert, SQLUpdate, SQLDelete, SQLMerge:
 		return true
 	default:
 		return false
@@ -46,6 +47,8 @@ func (k SQLKind) String() string {
 		return "UPDATE"
 	case SQLDelete:
 		return "DELETE"
+	case SQLMerge:
+		return "MERGE"
 	case SQLOpen:
 		return "OPEN"
 	case SQLFetch:
@@ -123,16 +126,25 @@ const (
 
 // Branch records one if/else-if/else header and its block extent at any
 // nesting depth. Top-level chains of the entry function are reconstructed by
-// consumers (the IR condition inventory).
+// consumers (the IR condition inventory). NestDepth is the branching-factor
+// nesting level: the number of enclosing if/else-if block extents containing
+// the header's position (else headers never contribute; an else body does
+// not nest its chain; an else-if is a sibling of its chain — its header sits
+// at/after the previous block's closing brace, which the position test
+// excludes). Unbraced parents create no nesting level (documented
+// approximation).
 type Branch struct {
-	Kind       BranchKind
-	Cond       string // normalized condition text ("" for else)
-	StartLine  int    // line of the if/else keyword
-	StartCol   int    // column of the if/else keyword
-	BlockStart int    // line of the block's opening brace (0 when unbraced)
-	BlockEnd   int    // line of the block's closing brace (0 when unbraced)
-	Depth      int    // brace depth at the keyword (function body top level == 1)
-	Function   string // enclosing function name ("" when outside any body)
+	Kind          BranchKind
+	Cond          string // normalized condition text ("" for else)
+	StartLine     int    // line of the if/else keyword
+	StartCol      int    // column of the if/else keyword
+	BlockStart    int    // line of the block's opening brace (0 when unbraced)
+	BlockEnd      int    // line of the block's closing brace (0 when unbraced)
+	BlockStartCol int    // column of the opening brace (0 when unbraced)
+	BlockEndCol   int    // column of the closing brace (0 when unbraced)
+	Depth         int    // brace depth at the keyword (function body top level == 1)
+	NestDepth     int    // enclosing if/else-if blocks (branching factor doubling)
+	Function      string // enclosing function name ("" when outside any body)
 }
 
 // VarDecl records a variable declaration whose base type is one of the

@@ -12,7 +12,7 @@ import (
 
 // QueryType is the deterministic classification of one logical query unit
 // (PRD §4.2.2: SELECT single-value / SELECT multi-row / INSERT / UPDATE /
-// DELETE; flattened cursors are SELECT multi-row).
+// DELETE / MERGE; flattened cursors are SELECT multi-row).
 type QueryType string
 
 const (
@@ -21,6 +21,7 @@ const (
 	QueryInsert       QueryType = "INSERT"
 	QueryUpdate       QueryType = "UPDATE"
 	QueryDelete       QueryType = "DELETE"
+	QueryMerge        QueryType = "MERGE"
 )
 
 // Template IDs of the embedded v1 DB-method set (internal/templates) keyed
@@ -34,6 +35,7 @@ const (
 	TemplateInsertTx     = "db_method_insert_tx"
 	TemplateUpdateTx     = "db_method_update_tx"
 	TemplateDeleteTx     = "db_method_delete_tx"
+	TemplateMerge        = "db_method_merge"
 )
 
 // TemplateID maps the query type to its generation template.
@@ -49,6 +51,8 @@ func (q QueryType) TemplateID() string {
 		return TemplateUpdateTx
 	case QueryDelete:
 		return TemplateDeleteTx
+	case QueryMerge:
+		return TemplateMerge
 	default:
 		return ""
 	}
@@ -197,19 +201,25 @@ type ExternalFn struct {
 // block converted under the standard rubric (PF-3): Entry is the synthesized
 // pseudo-function __fragment and every line number is the fragment file's
 // own. Buffers records the FML buffer-role facts (PF-4.1); TPCalls records
-// the correlated outbound-service call sites (PF-4.3).
+// the correlated outbound-service call sites (PF-4.3). BranchCount counts
+// the file's if/else-if headers (else never contributes) and
+// BranchingFactor is the doubling-weighted total: each header contributes
+// +1 × 2^(number of enclosing if/else-if blocks); loops and else bodies do
+// not nest (documented approximation for unbraced parents).
 type File struct {
-	Path        string       `json:"path"`
-	Entry       string       `json:"entry,omitempty"`
-	Fragment    bool         `json:"fragment,omitempty"`
-	Functions   []string     `json:"functions"`
-	Conditions  []Condition  `json:"conditions,omitempty"`
-	FmlOps      []FmlOp      `json:"fml_ops,omitempty"`
-	Buffers     []BufferRole `json:"buffers,omitempty"`
-	TPCalls     []TPCall     `json:"tpcalls,omitempty"`
-	Queries     []*Query     `json:"queries"`
-	HostVars    []HostVar    `json:"host_vars"`
-	ExternalFns []ExternalFn `json:"external_fns,omitempty"`
+	Path            string       `json:"path"`
+	Entry           string       `json:"entry,omitempty"`
+	Fragment        bool         `json:"fragment,omitempty"`
+	Functions       []string     `json:"functions"`
+	BranchCount     int          `json:"branch_count"`
+	BranchingFactor int          `json:"branching_factor"`
+	Conditions      []Condition  `json:"conditions,omitempty"`
+	FmlOps          []FmlOp      `json:"fml_ops,omitempty"`
+	Buffers         []BufferRole `json:"buffers,omitempty"`
+	TPCalls         []TPCall     `json:"tpcalls,omitempty"`
+	Queries         []*Query     `json:"queries"`
+	HostVars        []HostVar    `json:"host_vars"`
+	ExternalFns     []ExternalFn `json:"external_fns,omitempty"`
 }
 
 // UniqueQueries returns the queries that survive duplicate collapsing

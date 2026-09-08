@@ -162,6 +162,77 @@ func TestGenDBMethodsAndInterface(t *testing.T) {
 	}
 }
 
+// TestGenMergeDBMethod pins the MERGE conversion path end-to-end on the
+// merge fixture: the MERGE unit renders through db_method_merge (DML
+// contract, error-only signature) with deterministic fallback naming.
+func TestGenMergeDBMethod(t *testing.T) {
+	files, err := ir.ExtractDir("../../testdata/merge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("merge fixture extraction = %d files, want 1", len(files))
+	}
+	main := files[0]
+
+	m := &plan.Mapping{
+		Service:    "demomerge",
+		Module:     "mutual-fund-be/pkg/services/demomerge",
+		ReadDBs:    []string{"MF"},
+		RouteGroup: "/demomerge",
+		// The MERGE lives in the default branch (condition 2); no method
+		// pin — the deterministic fallback naming applies.
+		Endpoints: []plan.Endpoint{
+			{Condition: 2, Name: "MergeAccount", Route: "/demo_merge"},
+		},
+		DBMethods: map[string]plan.MethodPin{},
+	}
+	p, err := plan.Build(plan.Options{Main: main, Mapping: m, Budget: budget.New(12000, 4000, 4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewService(Options{Plan: p, Main: main})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mergeUnit *plan.Unit
+	for i := range p.Units {
+		u := &p.Units[i]
+		if u.Kind == plan.KindDBMethod && len(u.QueryIDs) > 0 {
+			mergeUnit = u
+		}
+	}
+	if mergeUnit == nil {
+		t.Fatalf("no db method unit in the merge plan:\n%+v", p.Units)
+	}
+	if mergeUnit.TemplateID != "db_method_merge" {
+		t.Errorf("unit template = %s, want db_method_merge", mergeUnit.TemplateID)
+	}
+	if mergeUnit.Name != "MergeDemoAccounts" {
+		t.Errorf("deterministic merge method name = %s, want MergeDemoAccounts", mergeUnit.Name)
+	}
+
+	body, sig, needsSQL, err := s.DBMethod(*mergeUnit)
+	if err != nil {
+		t.Fatalf("DBMethod(merge) failed: %v", err)
+	}
+	if needsSQL {
+		t.Error("merge must not need the database/sql scan import (DML contract)")
+	}
+	if sig != "MergeDemoAccounts(c context.Context, accountId string, balance string) error" {
+		t.Errorf("merge signature = %q", sig)
+	}
+	for _, want := range []string{
+		"func (g *store) MergeDemoAccounts(c context.Context, accountId string, balance string) error {",
+		"g.db.ExecContext(c, query, accountId, balance)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("merge body missing %q\n---\n%s", want, body)
+		}
+	}
+}
+
 func TestGenAccumulateDBInterface(t *testing.T) {
 	s, p, _ := genNavFixture(t)
 	path := filepath.Join(t.TempDir(), "db", "interface.go")

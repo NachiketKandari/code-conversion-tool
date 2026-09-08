@@ -50,6 +50,7 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 	// Every comment span is recorded (PF-1), and constructs the scanner cannot
 	// close become UnbalancedRegion facts (PF-1.4) instead of truncating.
 	s.scan()
+	assignIfNesting(s.branches)
 
 	// Editor-style line count: a final line without a trailing newline counts.
 	numLines := bytes.Count(src, []byte{'\n'})
@@ -81,6 +82,41 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 		Unbalanced:  s.unbalanced,
 		TpCallCount: s.tpcallCount,
 	}, nil
+}
+
+// assignIfNesting sets each branch header's if-nesting depth (the
+// branching-factor doubling rule): the number of enclosing if/else-if block
+// extents strictly containing the header's position. else headers never
+// contribute and are never enclosing (an else body does not nest its chain);
+// an else-if is a sibling of its chain — its header sits at/after the
+// previous block's closing brace, which the position test excludes. Unbraced
+// parents create no nesting level (documented approximation). Computed as a
+// post-pass so the tokenizer stays single-pass; containment is
+// shift-invariant, so fragment rebasing cannot invalidate it.
+func assignIfNesting(branches []Branch) {
+	after := func(h, e Branch) bool { // h strictly after e's header position
+		return h.StartLine > e.StartLine || (h.StartLine == e.StartLine && h.StartCol > e.StartCol)
+	}
+	inside := func(h, e Branch) bool { // h strictly before e's closing brace
+		return h.StartLine < e.BlockEnd || (h.StartLine == e.BlockEnd && h.StartCol < e.BlockEndCol)
+	}
+	for i := range branches {
+		b := &branches[i]
+		if b.Kind == BranchElse {
+			continue
+		}
+		depth := 0
+		for j := range branches {
+			e := branches[j]
+			if j == i || e.Kind == BranchElse || e.BlockStart == 0 || e.BlockEnd == 0 {
+				continue
+			}
+			if after(branches[i], e) && inside(branches[i], e) {
+				depth++
+			}
+		}
+		b.NestDepth = depth
+	}
 }
 
 // ScanFragment parses a lone code fragment (PF-3.2) — typically one branch
@@ -658,6 +694,8 @@ func classifySQL(sql string) (SQLKind, string) {
 		return SQLUpdate, ""
 	case "DELETE":
 		return SQLDelete, ""
+	case "MERGE":
+		return SQLMerge, ""
 	case "DECLARE":
 		// Check for DECLARE <cursor> CURSOR FOR SELECT ...
 		if len(fields) >= 4 && fields[2] == "CURSOR" && fields[3] == "FOR" {
@@ -802,6 +840,20 @@ func (s *scannerState) lineAt(off int) int {
 	return line
 }
 
+// colAt computes the 1-based column of an offset that is at or after the
+// current scan position (read-only forward scans only).
+func (s *scannerState) colAt(off int) int {
+	col := s.col
+	for i := s.pos; i < off && i < s.len; i++ {
+		if s.src[i] == '\n' {
+			col = 1
+		} else {
+			col++
+		}
+	}
+	return col
+}
+
 // balancedParenText returns the raw text between the parenthesis at off and
 // its match ("" when off is not '(' or the parens never balance). Strings,
 // chars, and comments inside are carried through verbatim.
@@ -862,13 +914,16 @@ func (s *scannerState) skipBlockCommentReadOnly(i int) int {
 	return s.len
 }
 
-// blockExtent returns the line numbers of the opening brace at off and its
-// matching close (ok=false when off is not '{' or the block never closes).
-func (s *scannerState) blockExtent(off int) (start, end int, ok bool) {
+// blockExtent returns the position of the opening brace at off and the
+// position of its matching close (ok=false when off is not '{' or the block
+// never closes). Positions are line/column pairs so consumers can tell a
+// header that sits inside the block from one that follows its closing brace
+// on the same line (`} else if …`).
+func (s *scannerState) blockExtent(off int) (start, startCol, end, endCol int, ok bool) {
 	if off >= s.len || s.src[off] != '{' {
-		return 0, 0, false
+		return 0, 0, 0, 0, false
 	}
-	start = s.lineAt(off)
+	start, startCol = s.lineAt(off), s.colAt(off)
 	depth := 0
 	for i := off; i < s.len; i++ {
 		switch b := s.src[i]; b {
@@ -877,7 +932,7 @@ func (s *scannerState) blockExtent(off int) (start, end int, ok bool) {
 		case '}':
 			depth--
 			if depth == 0 {
-				return start, s.lineAt(i), true
+				return start, startCol, s.lineAt(i), s.colAt(i), true
 			}
 		case '"':
 			i = s.skipQuotedReadOnly(i, '"')
@@ -895,7 +950,7 @@ func (s *scannerState) blockExtent(off int) (start, end int, ok bool) {
 			}
 		}
 	}
-	return 0, 0, false
+	return 0, 0, 0, 0, false
 }
 
 // recordIfBranch captures one if/else-if header and its block. Read-only:
@@ -907,22 +962,24 @@ func (s *scannerState) recordIfBranch(kind BranchKind, startLine, startCol, dept
 	}
 	inner := s.balancedParenText(off)
 	cond := strings.Join(strings.Fields(inner), " ")
-	blockStart, blockEnd := 0, 0
+	blockStart, blockStartCol, blockEnd, blockEndCol := 0, 0, 0, 0
 	// off: '(' at off, inner between, close paren at off+1+len(inner).
 	if end := off + 2 + len(inner); end <= s.len {
 		if open := s.skipReadOnly(end); open < s.len && s.src[open] == '{' {
-			blockStart, blockEnd, _ = s.blockExtent(open)
+			blockStart, blockStartCol, blockEnd, blockEndCol, _ = s.blockExtent(open)
 		}
 	}
 	s.branches = append(s.branches, Branch{
-		Kind:       kind,
-		Cond:       cond,
-		StartLine:  startLine,
-		StartCol:   startCol,
-		BlockStart: blockStart,
-		BlockEnd:   blockEnd,
-		Depth:      depth,
-		Function:   s.fnName(s.curFn),
+		Kind:          kind,
+		Cond:          cond,
+		StartLine:     startLine,
+		StartCol:      startCol,
+		BlockStart:    blockStart,
+		BlockEnd:      blockEnd,
+		BlockStartCol: blockStartCol,
+		BlockEndCol:   blockEndCol,
+		Depth:         depth,
+		Function:      s.fnName(s.curFn),
 	})
 }
 
@@ -936,18 +993,20 @@ func (s *scannerState) recordElseBranch(startLine, startCol, depth int) {
 	if s.src[off] != '{' {
 		return // `else if` chain link or `else` + label — the if-record handles it
 	}
-	blockStart, blockEnd, ok := s.blockExtent(off)
+	blockStart, blockStartCol, blockEnd, blockEndCol, ok := s.blockExtent(off)
 	if !ok {
 		return
 	}
 	s.branches = append(s.branches, Branch{
-		Kind:       BranchElse,
-		StartLine:  startLine,
-		StartCol:   startCol,
-		BlockStart: blockStart,
-		BlockEnd:   blockEnd,
-		Depth:      depth,
-		Function:   s.fnName(s.curFn),
+		Kind:          BranchElse,
+		StartLine:     startLine,
+		StartCol:      startCol,
+		BlockStart:    blockStart,
+		BlockEnd:      blockEnd,
+		BlockStartCol: blockStartCol,
+		BlockEndCol:   blockEndCol,
+		Depth:         depth,
+		Function:      s.fnName(s.curFn),
 	})
 }
 

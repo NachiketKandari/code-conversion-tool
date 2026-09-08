@@ -269,6 +269,7 @@ func build(facts *scanner.SourceFacts, opts Options) *File {
 	f.Entry = entry
 
 	f.Queries = buildQueries(facts)
+	f.BranchCount, f.BranchingFactor = branchingOf(facts)
 
 	if entry != "" {
 		f.Conditions = buildConditions(facts, entry, f.Queries)
@@ -282,6 +283,21 @@ func build(facts *scanner.SourceFacts, opts Options) *File {
 
 	linkDuplicates(f.Queries)
 	return f
+}
+
+// branchingOf totals the file's if/else-if header count (else never
+// contributes) and the doubling-weighted branching factor: each header adds
+// 1 << NestDepth, where NestDepth is the scanner's count of enclosing
+// if/else-if blocks.
+func branchingOf(facts *scanner.SourceFacts) (count, factor int) {
+	for _, b := range facts.Branches {
+		if b.Kind == scanner.BranchElse {
+			continue
+		}
+		count++
+		factor += 1 << b.NestDepth
+	}
+	return count, factor
 }
 
 // commentLiveFacts excludes any call or SQL statement whose start position
@@ -491,6 +507,9 @@ func buildQueries(facts *scanner.SourceFacts) []*Query {
 		case scanner.SQLDelete:
 			ordinal++
 			out = append(out, dmlQuery(stmt, QueryDelete, ordinal))
+		case scanner.SQLMerge:
+			ordinal++
+			out = append(out, dmlQuery(stmt, QueryMerge, ordinal))
 		}
 	}
 	return out
@@ -715,28 +734,34 @@ func tablesFromSelect(sql string) []string {
 	return out
 }
 
-// tablesFromDML parses the target table of INSERT/UPDATE/DELETE.
+// tablesFromDML parses the target table of INSERT/UPDATE/DELETE/MERGE
+// (MERGE accepts both `MERGE INTO t` and bare `MERGE t`).
 func tablesFromDML(sql string, qt QueryType) []string {
 	upper := strings.ToUpper(sql)
-	var marker string
+	var markers []string
 	switch qt {
 	case QueryInsert:
-		marker = "INSERT INTO"
+		markers = []string{"INSERT INTO"}
 	case QueryUpdate:
-		marker = "UPDATE"
+		markers = []string{"UPDATE"}
 	case QueryDelete:
-		marker = "DELETE FROM"
+		markers = []string{"DELETE FROM"}
+	case QueryMerge:
+		markers = []string{"MERGE INTO", "MERGE"}
 	}
-	idx := strings.Index(upper, marker)
-	if idx < 0 {
-		return nil
+	for _, marker := range markers {
+		idx := strings.Index(upper, marker)
+		if idx < 0 {
+			continue
+		}
+		rest := strings.TrimSpace(sql[idx+len(marker):])
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return nil
+		}
+		return []string{fields[0]}
 	}
-	rest := strings.TrimSpace(sql[idx+len(marker):])
-	fields := strings.Fields(rest)
-	if len(fields) == 0 {
-		return nil
-	}
-	return []string{fields[0]}
+	return nil
 }
 
 // buildConditions reconstructs the entry function's top-level if/else-if/else

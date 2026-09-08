@@ -294,6 +294,7 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 		return "", "", false, fmt.Errorf("gen: db unit %s references unknown query %q", u.ID, u.QueryIDs[0])
 	}
 	pin, _ := s.Pin(u.QueryIDs[0])
+	errOnly := false
 
 	params, err := s.dbParams(q, pin)
 	if err != nil {
@@ -324,6 +325,10 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 			row := s.RowName(u.QueryIDs[0], u.Name)
 			d.RowType, d.VarName = "models."+row, lowerFirst(row)
 		}
+	case ir.QueryMerge:
+		// MERGE renders through the DML contract (db_method_merge):
+		// ExecContext + RowsAffected, error-only return.
+		errOnly = true
 	default:
 		return "", "", false, fmt.Errorf("gen: query %s type %s not supported by the deterministic db generator yet", q.ID, q.Type)
 	}
@@ -340,7 +345,11 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 	for _, p := range params {
 		sig += ", " + p.Name + " " + p.Type
 	}
-	sig += ") (" + d.ReturnType() + ", error)"
+	if errOnly {
+		sig += ") error"
+	} else {
+		sig += ") (" + d.ReturnType() + ", error)"
+	}
 	return body, sig, needsSQL, nil
 }
 

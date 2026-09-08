@@ -14,19 +14,23 @@ import (
 )
 
 // Marks are the OQ18 scoring knobs. Defaults: +1 per query, +5 per simple
-// external fn, +10 per complex external fn, +20 per tpcall. Every mark is
-// settable in the generated CSV's `# tuxgo marks:` line and re-applied via
-// -weights (LoadOptionsCSV) — scoring never requires a code change.
+// external fn, +10 per complex external fn, +20 per tpcall, +1 per unit of
+// branching factor (each if/else-if header contributes +1 × 2^(number of
+// enclosing if/else-if blocks); else headers never contribute). Every mark
+// is settable in the generated CSV's `# tuxgo marks:` line (and in the marks
+// cells row, which wins) and re-applied via -weights (LoadOptionsCSV) —
+// scoring never requires a code change.
 type Marks struct {
 	Query   int
 	Simple  int
 	Complex int
 	TpCall  int
+	Branch  int
 }
 
 // DefaultMarks returns the OQ18 rubric defaults.
 func DefaultMarks() Marks {
-	return Marks{Query: 1, Simple: 5, Complex: 10, TpCall: 20}
+	return Marks{Query: 1, Simple: 5, Complex: 10, TpCall: 20, Branch: 1}
 }
 
 // Options carries all analyzer tuning for one run: the rubric Marks plus
@@ -147,10 +151,19 @@ func classifyExternal(name string, c corpus, opts Options) ExternalFn {
 }
 
 // Report holds the triage complexity analysis results for a Pro*C/Tuxedo file.
+// Query-type counts (select/insert/update/delete/merge) sum to NumQueries —
+// every query unit counts, dedup-inclusive, matching the score's query term.
 type Report struct {
 	File            string
 	NumLines        int
 	NumQueries      int
+	BranchCount     int // if/else-if headers (else never contributes)
+	BranchingFactor int // doubling-weighted: Σ 2^(enclosing-if depth)
+	SelectCount     int
+	InsertCount     int
+	UpdateCount     int
+	DeleteCount     int
+	MergeCount      int
 	HasTpCall       bool
 	TpCallCount     int
 	FnLocalCount    int
@@ -205,13 +218,43 @@ func analyzeFacts(facts *scanner.SourceFacts, c corpus, opts Options) *Report {
 	numQueries := len(facts.Queries)
 	hasTpCall := facts.TpCallCount > 0
 
-	// OQ18 rubric with the run's marks: query/tpcall per count, externals by
-	// effective weight (per-fn override or tier mark).
+	// Per-type query counts (select counts direct SELECTs and flattened
+	// cursors alike; every unit counts, dedup-inclusive).
+	selectCount, insertCount, updateCount, deleteCount, mergeCount := 0, 0, 0, 0, 0
+	for _, q := range facts.Queries {
+		switch q.Kind {
+		case scanner.SQLSelect, scanner.SQLDeclareCursor:
+			selectCount++
+		case scanner.SQLInsert:
+			insertCount++
+		case scanner.SQLUpdate:
+			updateCount++
+		case scanner.SQLDelete:
+			deleteCount++
+		case scanner.SQLMerge:
+			mergeCount++
+		}
+	}
+
+	// Branching factor: each if/else-if header contributes +1 × 2^nest
+	// (NestDepth = enclosing if/else-if blocks; else headers never
+	// contribute).
+	branchCount, branchFactor := 0, 0
+	for _, b := range facts.Branches {
+		if b.Kind == scanner.BranchElse {
+			continue
+		}
+		branchCount++
+		branchFactor += 1 << b.NestDepth
+	}
+
+	// OQ18 rubric with the run's marks: query/tpcall/branch per count,
+	// externals by effective weight (per-fn override or tier mark).
 	extWeight := 0
 	for _, fn := range externalFns {
 		extWeight += fn.Weight
 	}
-	score := (numQueries * opts.Marks.Query) + extWeight + (facts.TpCallCount * opts.Marks.TpCall)
+	score := (numQueries * opts.Marks.Query) + extWeight + (facts.TpCallCount * opts.Marks.TpCall) + (branchFactor * opts.Marks.Branch)
 
 	tier := "LOW"
 	if score >= 30 {
@@ -236,11 +279,19 @@ func analyzeFacts(facts *scanner.SourceFacts, c corpus, opts Options) *Report {
 		reasonParts = append(reasonParts, "0 external fns (+0)")
 	}
 	reasonParts = append(reasonParts, fmt.Sprintf("%d tpcall (+%d)", facts.TpCallCount, facts.TpCallCount*opts.Marks.TpCall))
+	reasonParts = append(reasonParts, fmt.Sprintf("branching factor %d over %d branch headers (+%d)", branchFactor, branchCount, branchFactor*opts.Marks.Branch))
 
 	return &Report{
 		File:            facts.Path,
 		NumLines:        facts.NumLines,
 		NumQueries:      numQueries,
+		BranchCount:     branchCount,
+		BranchingFactor: branchFactor,
+		SelectCount:     selectCount,
+		InsertCount:     insertCount,
+		UpdateCount:     updateCount,
+		DeleteCount:     deleteCount,
+		MergeCount:      mergeCount,
 		HasTpCall:       hasTpCall,
 		TpCallCount:     facts.TpCallCount,
 		FnLocalCount:    localFnPrefCount,
@@ -343,19 +394,32 @@ func AnalyzeDir(dir string, opts Options) ([]*Report, error) {
 }
 
 // WriteCSV exports analysis reports in the OQ18 CSV format. The CSV is both
-// the triage report and the single tuning surface: the leading marks line
-// carries every rubric mark (edit `query=… tpcall=…` there), the external_fns
-// cell names every external call as name:class:weight (edit the weight, or
-// clear it with `name:class:` to fall back to the tier mark). Passing the
-// edited file back (LoadOptionsCSV / --weights) re-scores. Data rows are
-// self-contained — score = num_queries*query + external_weight + tpcall_count*tpcall.
-// Tools consuming the tabular data can skip the marks line (csv.Reader.Comment = '#').
+// the triage report and the single tuning surface, in four layers:
+//
+//   - Row 1, the `# tuxgo marks:` comment: every rubric mark in one
+//     machine-readable line (edit `query=… tpcall=… branch=…` there).
+//   - Row 2, the marks cells: the marks that score a column sit in cells
+//     aligned over that column (num_queries, branching_factor, tpcall_count),
+//     so the score formulas can reference them. These cells win over the
+//     comment line when a CSV is fed back via LoadOptionsCSV / --weights.
+//   - Row 3, the header; data rows follow. The external_fns cell names every
+//     external call as name:class:weight (edit the weight, or clear it with
+//     `name:class:` to fall back to the tier mark).
+//   - complexity_score and complexity are spreadsheet formulas (e.g.
+//     =C$2*C4+D$2*D4+G$2*G4+K4 and =IF(Q4>=30,"HIGH",…)) so a spreadsheet
+//     recalculates when marks cells change. Programmatic consumers recompute
+//     the score from the row instead (the formula string is not a number).
+//
+// Data rows are self-contained — score = num_queries*query +
+// branching_factor*branch + external_weight + tpcall_count*tpcall. Tools
+// consuming the tabular data can skip the marks line (csv.Reader.Comment =
+// '#').
 func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 	writer := csv.NewWriter(w)
 	defer writer.Flush()
 
-	marksLine := fmt.Sprintf("# tuxgo marks: query=%d simple=%d complex=%d tpcall=%d",
-		marks.Query, marks.Simple, marks.Complex, marks.TpCall)
+	marksLine := fmt.Sprintf("# tuxgo marks: query=%d simple=%d complex=%d tpcall=%d branch=%d",
+		marks.Query, marks.Simple, marks.Complex, marks.TpCall, marks.Branch)
 	if err := writer.Write([]string{marksLine}); err != nil {
 		return err
 	}
@@ -364,39 +428,89 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 		"file",
 		"num_lines",
 		"num_queries",
+		"branching_factor",
+		"branch_count",
 		"has_tpcall",
 		"tpcall_count",
 		"fn_local_count",
 		"fn_external_count",
 		"external_fns",
 		"external_weight",
+		"select_count",
+		"insert_count",
+		"update_count",
+		"delete_count",
+		"merge_count",
 		"complexity_score",
 		"complexity",
 		"reasons",
 	}
+
+	// Marks cells row (spreadsheet row 2, above the header): the mark that
+	// scores each factor column sits over that column, giving the score
+	// formulas their absolute references. external_weight has no mark — the
+	// per-fn weights are already summed in the cell.
+	idx := make(map[string]int, len(header))
+	for i, name := range header {
+		idx[name] = i + 1
+	}
+	marksRow := make([]string, len(header))
+	for name, mark := range map[string]int{
+		"num_queries":      marks.Query,
+		"branching_factor": marks.Branch,
+		"tpcall_count":     marks.TpCall,
+	} {
+		marksRow[idx[name]-1] = strconv.Itoa(mark)
+	}
+	if err := writer.Write(marksRow); err != nil {
+		return err
+	}
+
 	if err := writer.Write(header); err != nil {
 		return err
 	}
 
-	for _, r := range reports {
+	qCol := colLetters(idx["num_queries"])
+	bCol := colLetters(idx["branching_factor"])
+	tCol := colLetters(idx["tpcall_count"])
+	wCol := colLetters(idx["external_weight"])
+	sCol := colLetters(idx["complexity_score"])
+
+	// Data rows start at spreadsheet row 4 (marks line 1, marks cells 2,
+	// header 3); the first data row is row 4.
+	for i, r := range reports {
+		rowNo := i + 4
 		fnCells := make([]string, 0, len(r.ExternalFns))
 		extWeight := 0
 		for _, fn := range r.ExternalFns {
 			fnCells = append(fnCells, fmt.Sprintf("%s:%s:%d", fn.Name, fn.Class, fn.Weight))
 			extWeight += fn.Weight
 		}
+		scoreFormula := fmt.Sprintf("=%s$2*%s%d+%s$2*%s%d+%s$2*%s%d+%s%d",
+			qCol, qCol, rowNo,
+			bCol, bCol, rowNo,
+			tCol, tCol, rowNo,
+			wCol, rowNo)
+		tierFormula := fmt.Sprintf("=IF(%s%d>=30,\"HIGH\",IF(%s%d>=10,\"MEDIUM\",\"LOW\"))", sCol, rowNo, sCol, rowNo)
 		row := []string{
 			r.File,
 			strconv.Itoa(r.NumLines),
 			strconv.Itoa(r.NumQueries),
+			strconv.Itoa(r.BranchingFactor),
+			strconv.Itoa(r.BranchCount),
 			strconv.FormatBool(r.HasTpCall),
 			strconv.Itoa(r.TpCallCount),
 			strconv.Itoa(r.FnLocalCount),
 			strconv.Itoa(r.FnExternalCount),
 			strings.Join(fnCells, ";"),
 			strconv.Itoa(extWeight),
-			strconv.Itoa(r.ComplexityScore),
-			r.Complexity,
+			strconv.Itoa(r.SelectCount),
+			strconv.Itoa(r.InsertCount),
+			strconv.Itoa(r.UpdateCount),
+			strconv.Itoa(r.DeleteCount),
+			strconv.Itoa(r.MergeCount),
+			scoreFormula,
+			tierFormula,
 			r.Reasons,
 		}
 		if err := writer.Write(row); err != nil {
@@ -407,14 +521,28 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 	return writer.Error()
 }
 
+// colLetters converts a 1-based spreadsheet column index to its letters
+// (1→A, 26→Z, 27→AA).
+func colLetters(i int) string {
+	letters := ""
+	for i > 0 {
+		i--
+		letters = string(rune('A'+i%26)) + letters
+		i /= 26
+	}
+	return letters
+}
+
 // LoadOptionsCSV reads a previously generated analysis CSV back into Options:
-// the rubric marks from its `# tuxgo marks:` line (missing marks keep the
-// defaults) and the per-fn weights from the external_fns column. A per-fn
-// weight cleared in the file (`name:class:`) falls back to the tier mark.
+// the rubric marks — from the marks cells row when present (cells win), else
+// the `# tuxgo marks:` line (missing marks keep the defaults) — and the
+// per-fn weights from the external_fns column. A per-fn weight cleared in
+// the file (`name:class:`) falls back to the tier mark. Formula cells
+// (complexity_score/complexity) are ignored: re-scoring recomputes them.
 // This is the re-score entry point — edit marks or weights in the CSV and
-// re-run analyze with -weights pointing at it. Unknown mark keys and malformed
-// values are errors: a typo must never silently keep a default. On duplicate
-// fn names the last row wins.
+// re-run analyze with -weights pointing at it. Unknown mark keys and
+// malformed values are errors: a typo must never silently keep a default. On
+// duplicate fn names the last row wins.
 func LoadOptionsCSV(path string) (Options, error) {
 	opts := DefaultOptions()
 	opts.FnWeights = make(map[string]int)
@@ -436,6 +564,7 @@ func LoadOptionsCSV(path string) (Options, error) {
 	}
 
 	col := -1
+	var prev []string
 	for _, rec := range records {
 		if len(rec) == 0 {
 			continue
@@ -445,9 +574,15 @@ func LoadOptionsCSV(path string) (Options, error) {
 			if err := applyMarksLine(first, &opts.Marks); err != nil {
 				return opts, fmt.Errorf("%s: %w", path, err)
 			}
+			prev = rec
 			continue
 		}
 		if first == "file" {
+			// The table-shaped record immediately above the header is the
+			// marks cells row; its cells override the comment line.
+			if err := applyMarksRow(prev, rec, &opts.Marks); err != nil {
+				return opts, fmt.Errorf("%s: %w", path, err)
+			}
 			for i, name := range rec {
 				if name == "external_fns" {
 					col = i
@@ -456,6 +591,7 @@ func LoadOptionsCSV(path string) (Options, error) {
 			}
 			continue
 		}
+		prev = rec
 		if col < 0 || len(rec) <= col {
 			continue
 		}
@@ -489,6 +625,45 @@ func LoadOptionsCSV(path string) (Options, error) {
 	return opts, nil
 }
 
+// applyMarksRow parses one marks cells row — the record immediately above
+// the header whose cells carry the marks aligned over their factor columns
+// (num_queries → query, branching_factor → branch, tpcall_count → tpcall).
+// A nil row, a comment line, a length mismatch (pre-formula CSV), or an
+// all-empty row is a no-op so legacy CSVs keep loading; a non-numeric cell
+// under a factor column is an error so mis-edits surface instead of
+// silently keeping a default.
+func applyMarksRow(row, header []string, m *Marks) error {
+	if row == nil || len(row) == 0 || len(row) != len(header) {
+		return nil
+	}
+	if strings.HasPrefix(strings.TrimSpace(row[0]), "#") {
+		return nil
+	}
+	for i, name := range header {
+		var target *int
+		switch name {
+		case "num_queries":
+			target = &m.Query
+		case "branching_factor":
+			target = &m.Branch
+		case "tpcall_count":
+			target = &m.TpCall
+		default:
+			continue
+		}
+		cell := strings.TrimSpace(row[i])
+		if cell == "" {
+			continue
+		}
+		n, err := strconv.Atoi(cell)
+		if err != nil {
+			return fmt.Errorf("bad mark cell %q in column %s", cell, name)
+		}
+		*target = n
+	}
+	return nil
+}
+
 // applyMarksLine parses one `# tuxgo marks: query=1 simple=5 …` comment into
 // m. Unrelated comment lines are ignored; a malformed or unknown mark is an
 // error so mis-edits surface instead of silently keeping a default.
@@ -516,6 +691,8 @@ func applyMarksLine(field string, m *Marks) error {
 			m.Complex = n
 		case "tpcall":
 			m.TpCall = n
+		case "branch":
+			m.Branch = n
 		default:
 			return fmt.Errorf("unknown mark %q", key)
 		}

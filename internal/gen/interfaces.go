@@ -53,6 +53,8 @@ func (s *Service) DBMethodsFile(p *plan.Plan) (string, error) {
 			need.sql, need.errors = true, true
 		case ir.QuerySelectMulti:
 			need.fmt = true
+		case ir.QueryMerge:
+			need.sql = true
 		}
 		if hasTimeParam(methodParams(s, q)) {
 			need.time = true

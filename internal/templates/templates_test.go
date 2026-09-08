@@ -310,6 +310,26 @@ func TestRenderDBMethodDMLPlain(t *testing.T) {
 	}
 }
 
+func TestRenderDBMethodMerge(t *testing.T) {
+	out := render(t, DBMethodMerge, DBMethodData{
+		Receiver: "g", StoreType: "store", Name: "MergeAccounts", CtxName: "ctx",
+		Params: []ParamSpec{{Name: "accountId", Type: "string"}, {Name: "balance", Type: "string"}},
+		Query:  "MERGE INTO DEMO_ACCOUNTS a USING (SELECT :1 AS ID FROM DUAL) s ON (a.ACCOUNT_ID = s.ID) WHEN MATCHED THEN UPDATE SET a.BALANCE = :2 WHEN NOT MATCHED THEN INSERT (ACCOUNT_ID, BALANCE) VALUES (:1, :2)",
+	})
+	for _, want := range []string{
+		"func (g *store) MergeAccounts(ctx context.Context, accountId string, balance string) error {",
+		"g.db.ExecContext(ctx, query, accountId, balance)",
+		"return sql.ErrNoRows",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("merge method missing %q\n---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "GetContext") || strings.Contains(out, "SelectContext") {
+		t.Errorf("merge must render through the DML contract (no row reads):\n%s", out)
+	}
+}
+
 func TestRenderControllerInterfaceFile(t *testing.T) {
 	out := render(t, ControllerInterfaceFile, ControllerInterfaceData{
 		Package: "controller", StructName: "navController", IfaceName: "NavController",

@@ -368,6 +368,8 @@ func methodName(m *Mapping, q *ir.Query) string {
 		return "Update" + camel(table)
 	case ir.QueryDelete:
 		return "Delete" + camel(table)
+	case ir.QueryMerge:
+		return "Merge" + camel(table)
 	default:
 		return "Get" + camel(table)
 	}

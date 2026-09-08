@@ -25,6 +25,7 @@ const (
 	DBMethodInsertTx        ID = "db_method_insert_tx"
 	DBMethodUpdateTx        ID = "db_method_update_tx"
 	DBMethodDeleteTx        ID = "db_method_delete_tx"
+	DBMethodMerge           ID = "db_method_merge"
 	DBMethodDMLPlain        ID = "db_method_dml_plain"
 	ControllerInterfaceFile ID = "controller_interface_file"
 	ControllerMethod        ID = "controller_method"
@@ -44,6 +45,7 @@ var AllIDs = []ID{
 	DBMethodInsertTx,
 	DBMethodUpdateTx,
 	DBMethodDeleteTx,
+	DBMethodMerge,
 	DBMethodDMLPlain,
 	ControllerInterfaceFile,
 	ControllerMethod,
