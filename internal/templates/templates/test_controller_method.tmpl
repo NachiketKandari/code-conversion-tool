@@ -1,17 +1,27 @@
+// run test | debug test
 func (suite *{{.SuiteName}}) Test{{.Name}}() {
 	testCases := []struct {
 		desc           string
+{{- range .ReqFields}}
+		{{.Name}}      string
+{{- end}}
 		mockInput      []any
 		expectedError  string
 		expectedOutput {{.ExpectType}}
 	}{
 		{
 			desc:          "StoreError",
+{{- range .ReqFields}}
+			{{.Name}}:     "{{.Value}}",
+{{- end}}
 			mockInput:     []any{nil, errors.New("store error")},
 			expectedError: "store error",
 		},
 		{
 			desc:           "Success",
+{{- range .ReqFields}}
+			{{.Name}}:      "{{.Value}}",
+{{- end}}
 			mockInput:      {{.MockReturn}},
 			expectedError:  "",
 			expectedOutput: {{.ExpectExpr}},
@@ -21,24 +31,25 @@ func (suite *{{.SuiteName}}) Test{{.Name}}() {
 	for _, testCase := range testCases {
 		suite.T().Run(testCase.desc, func(t *testing.T) {
 			// Mocking and Setting Expected Result
-			request := {{.ReqExpr}}
 
-			suite.{{.MockVar}}.
-				EXPECT().
-				{{.StoreCall}}(suite.ctx{{range .StoreArgs}}, {{.}}{{end}}).
-				Return(testCase.mockInput...)
+			if testCase.mockInput != nil {
+				suite.{{.StoreVar}}.
+					EXPECT().
+					{{.StoreCall}}(gomock.Any(){{range .StoreArgs}}, {{.}}{{end}}).
+					Return(testCase.mockInput...)
+			}
 
 			// Triggering Function
-			data, err := suite.{{.CtrlVar}}.{{.Name}}(suite.ctx, &request)
+			request := &{{.ReqExpr}}
+			actualOutput, err := suite.{{.CtrlVar}}.{{.Name}}(suite.ctx, request)
 
 			// Validations
 			if testCase.expectedError != "" {
-				assert.Error(t, err)
-				assert.Nil(t, data)
-				return
+				assert.ErrorContains(t, err, testCase.expectedError)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, actualOutput, testCase.expectedOutput)
 			}
-			assert.NoError(t, err)
-			assert.Equal(t, testCase.expectedOutput, data)
 		})
 	}
 }

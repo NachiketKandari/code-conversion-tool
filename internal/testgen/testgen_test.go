@@ -356,9 +356,18 @@ func TestGenerateNoLLM(t *testing.T) {
 
 	ctrlOut := read(t, filepath.Join(out, "pkg", "services", "nav", "controller", "nav_test.go"))
 	for _, want := range []string{
-		"func (suite *NavControllerSuite) TestNavDirect() {",
-		"GetNavDetails(suite.ctx, request.CompCode)",
-		"NavDirect(suite.ctx, &request)",
+		"type NavControllerSuiteController struct {",
+		"func (suite *NavControllerSuiteController) SetupTest() {",
+		"db.NewMockNavStore(suite.mockController)",
+		"func (suite *NavControllerSuiteController) TearDownTest() {",
+		"suite.mockController.Finish()",
+		"func (suite *NavControllerSuiteController) TestNavDirect() {",
+		"if testCase.mockInput != nil {",
+		"GetNavDetails(gomock.Any(), \"fmlcompcd\")",
+		"request := &models.NavRequest{CompCode: testCase.CompCode}",
+		"NavDirect(suite.ctx, request)",
+		"assert.ErrorContains(t, err, testCase.expectedError)",
+		"assert.Equal(t, actualOutput, testCase.expectedOutput)",
 	} {
 		if !strings.Contains(ctrlOut, want) {
 			t.Errorf("controller test missing %q\n---\n%s", want, ctrlOut)
@@ -422,55 +431,72 @@ func TestGenerateIdempotent(t *testing.T) {
 // TestGenerateWithLLM: the field-mapping controllers fill through the seam
 // on the per-function worker; every block passes the parse+shape gate.
 func TestGenerateWithLLM(t *testing.T) {
-	navListBlock := `func (suite *NavControllerSuite) TestNavList() {
+	navListBlock := `func (suite *NavControllerSuiteController) TestNavList() {
 	testCases := []struct {
 		desc           string
+		CompCode       string
 		mockInput      []any
 		expectedError  string
 		expectedOutput []*models.NavResponse
 	}{
-		{desc: "StoreError", mockInput: []any{nil, errors.New("store error")}, expectedError: "store error"},
-		{desc: "Success", mockInput: []any{[]*models.NavDetails{{CompCd: sql.NullString{String: "comp_cd", Valid: true}}}, nil}, expectedOutput: []*models.NavResponse{{CompCode: "comp_cd", CompName: "comp_name"}}},
+		{desc: "StoreError", CompCode: "fmlcompcd", mockInput: []any{nil, errors.New("store error")}, expectedError: "store error"},
+		{desc: "Success", CompCode: "fmlcompcd", mockInput: []any{[]*models.NavDetails{{CompCd: sql.NullString{String: "comp_cd", Valid: true}}}, nil}, expectedOutput: []*models.NavResponse{{CompCode: "comp_cd", CompName: "comp_name"}}},
 	}
 	for _, testCase := range testCases {
 		suite.T().Run(testCase.desc, func(t *testing.T) {
-			request := models.NavRequest{CompCode: "fml_comp_cd"}
-			suite.storeMock.EXPECT().GetNavDetails(suite.ctx, request.CompCode).Return(testCase.mockInput...)
-			data, err := suite.navController.NavList(suite.ctx, &request)
-			if testCase.expectedError != "" {
-				assert.Error(t, err)
-				assert.Nil(t, data)
-				return
+			if testCase.mockInput != nil {
+				suite.navStore.
+					EXPECT().
+					GetNavDetails(gomock.Any(), "fmlcompcd").
+					Return(testCase.mockInput...)
 			}
-			assert.NoError(t, err)
-			assert.Equal(t, testCase.expectedOutput, data)
+			request := &models.NavRequest{CompCode: testCase.CompCode}
+			actualOutput, err := suite.navController.NavList(suite.ctx, request)
+			if testCase.expectedError != "" {
+				assert.ErrorContains(t, err, testCase.expectedError)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, actualOutput, testCase.expectedOutput)
+			}
 		})
 	}
 }`
 
-	navHistoryBlock := `func (suite *NavControllerSuite) TestNavHistory() {
+	navHistoryBlock := `func (suite *NavControllerSuiteController) TestNavHistory() {
 	testCases := []struct {
 		desc           string
+		CompCode       string
+		SchemeCode     string
 		mockInput      []any
+		mockInput2     []any
 		expectedError  string
 		expectedOutput []*models.NavResponse
 	}{
-		{desc: "StoreError", mockInput: []any{nil, errors.New("store error")}, expectedError: "store error"},
-		{desc: "Success", mockInput: []any{[]*models.NavDetails{{CompCd: sql.NullString{String: "comp_cd", Valid: true}}}, nil}, expectedOutput: []*models.NavResponse{{CompCode: "comp_cd"}}},
+		{desc: "StoreError", CompCode: "fmlcompcd", SchemeCode: "fmlschemecd", mockInput: []any{&models.DateInfo{}, nil}, mockInput2: []any{nil, errors.New("store error")}, expectedError: "store error"},
+		{desc: "Success", CompCode: "fmlcompcd", SchemeCode: "fmlschemecd", mockInput: []any{&models.DateInfo{}, nil}, mockInput2: []any{[]*models.NavDetails{{CompCd: sql.NullString{String: "comp_cd", Valid: true}}}, nil}, expectedOutput: []*models.NavResponse{{CompCode: "comp_cd"}}},
 	}
 	for _, testCase := range testCases {
 		suite.T().Run(testCase.desc, func(t *testing.T) {
-			request := models.NavHistRequest{CompCode: "fml_comp_cd", SchemeCode: "fml_scheme_cd"}
-			suite.storeMock.EXPECT().GetDateDetails(suite.ctx).Return(&models.DateInfo{}, nil)
-			suite.storeMock.EXPECT().GetNavHistory(suite.ctx, request.CompCode, request.SchemeCode).Return(testCase.mockInput...)
-			data, err := suite.navController.NavHistory(suite.ctx, &request)
-			if testCase.expectedError != "" {
-				assert.Error(t, err)
-				assert.Nil(t, data)
-				return
+			if testCase.mockInput != nil {
+				suite.navStore.
+					EXPECT().
+					GetDateDetails(gomock.Any()).
+					Return(testCase.mockInput...)
 			}
-			assert.NoError(t, err)
-			assert.Equal(t, testCase.expectedOutput, data)
+			if testCase.mockInput2 != nil {
+				suite.navStore.
+					EXPECT().
+					GetNavHistory(gomock.Any(), "fmlcompcd", "fmlschemecd", gomock.Any(), gomock.Any()).
+					Return(testCase.mockInput2...)
+			}
+			request := &models.NavHistRequest{CompCode: testCase.CompCode, SchemeCode: testCase.SchemeCode}
+			actualOutput, err := suite.navController.NavHistory(suite.ctx, request)
+			if testCase.expectedError != "" {
+				assert.ErrorContains(t, err, testCase.expectedError)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, actualOutput, testCase.expectedOutput)
+			}
 		})
 	}
 }`
@@ -511,10 +537,10 @@ func TestGenerateWithLLM(t *testing.T) {
 
 	ctrlOut := read(t, filepath.Join(out, "pkg", "services", "nav", "controller", "nav_test.go"))
 	for _, want := range []string{
-		"func (suite *NavControllerSuite) TestNavList() {",
-		"func (suite *NavControllerSuite) TestNavHistory() {",
-		"GetDateDetails(suite.ctx)",
-		"GetNavHistory(suite.ctx, request.CompCode, request.SchemeCode)",
+		"func (suite *NavControllerSuiteController) TestNavList() {",
+		"func (suite *NavControllerSuiteController) TestNavHistory() {",
+		"GetDateDetails(gomock.Any())",
+		"GetNavHistory(gomock.Any(), \"fmlcompcd\", \"fmlschemecd\", gomock.Any(), gomock.Any())",
 	} {
 		if !strings.Contains(ctrlOut, want) {
 			t.Errorf("controller test missing %q\n---\n%s", want, ctrlOut)
@@ -578,24 +604,57 @@ func TestGenerateDeterministic(t *testing.T) {
 	}
 }
 
-// TestLLMGate rejects malformed seam output.
+// TestLLMGate rejects malformed seam output: shape (suite/receiver/name),
+// table-driven cases, guarded gomock.Any() EXPECTs, reference validations,
+// and the pointer request.
 func TestLLMGate(t *testing.T) {
-	u := &unit{suite: "NavControllerSuite", fn: testscan.Func{Name: "NavList"}}
+	u := &unit{suite: "NavControllerSuiteController", fn: testscan.Func{Name: "NavList"}}
 	if err := gateCtrlBlock("func (suite *Wrong) TestNavList() {}", u); err == nil {
 		t.Error("wrong receiver must be rejected")
 	}
-	if err := gateCtrlBlock("func (suite *NavControllerSuite) TestOther() {}", u); err == nil {
+	if err := gateCtrlBlock("func (suite *NavControllerSuiteController) TestOther() {}", u); err == nil {
 		t.Error("wrong name must be rejected")
 	}
-	if err := gateCtrlBlock("func (suite *NavControllerSuite) TestNavList() { _ = 1 }", u); err == nil {
+	if err := gateCtrlBlock("func (suite *NavControllerSuiteController) TestNavList() { _ = 1 }", u); err == nil {
 		t.Error("non-table block must be rejected")
 	}
 	if err := gateCtrlBlock("not go", u); err == nil {
 		t.Error("unparseable block must be rejected")
 	}
-	good := "func (suite *NavControllerSuite) TestNavList() { testCases := []struct{ desc string }{}; _ = testCases }"
+	if err := gateCtrlBlock(`func (suite *NavControllerSuiteController) TestNavList() { testCases := []struct{ desc string }{}; suite.navStore.EXPECT().GetNavDetails(suite.ctx, "x").Return(nil); _ = testCases }`, u); err == nil {
+		t.Error("unguarded suite.ctx EXPECT must be rejected")
+	}
+	if err := gateCtrlBlock(`func (suite *NavControllerSuiteController) TestNavList() { testCases := []struct{ desc string }{}; _ = testCases }`, u); err == nil {
+		t.Error("missing guarded gomock.Any EXPECT must be rejected")
+	}
+	if err := gateCtrlBlock(`func (suite *NavControllerSuiteController) TestNavList() { testCases := []struct{ desc string }{}; if testCase.mockInput != nil { suite.navStore.EXPECT().GetNavDetails(gomock.Any(), "x").Return(testCase.mockInput...) }; _ = testCases }`, u); err == nil {
+		t.Error("missing reference validations must be rejected")
+	}
+	good := `func (suite *NavControllerSuiteController) TestNavList() {
+	testCases := []struct{ desc string; mockInput []any }{}
+	for _, testCase := range testCases {
+		suite.T().Run(testCase.desc, func(t *testing.T) {
+			if testCase.mockInput != nil {
+				suite.navStore.EXPECT().GetNavDetails(gomock.Any(), "x").Return(testCase.mockInput...)
+			}
+			request := &models.NavRequest{CompCode: "x"}
+			actualOutput, err := suite.navController.NavList(suite.ctx, request)
+			if testCase.expectedError != "" {
+				assert.ErrorContains(t, err, testCase.expectedError)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, actualOutput, testCase.expectedOutput)
+			}
+		})
+	}
+}`
 	if err := gateCtrlBlock(good, u); err != nil {
 		t.Errorf("valid block rejected: %v", err)
+	}
+	valueReq := strings.Replace(good, `request := &models.NavRequest{CompCode: "x"}`, `requestValue := models.NavRequest{CompCode: "x"}`, 1)
+	valueReq = strings.Replace(valueReq, "suite.ctx, request)", "suite.ctx, requestValue)", 1)
+	if err := gateCtrlBlock(valueReq, u); err == nil {
+		t.Error("value-passed request must be rejected")
 	}
 }
 

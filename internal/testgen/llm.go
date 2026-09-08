@@ -64,15 +64,18 @@ func fillCtrlMethod(ctx context.Context, u *unit, opts Options) (string, int, er
 }
 
 func ctrlSystemPrompt(u *unit) string {
+	storeVar := strings.ToLower(u.sc.name) + "Store"
+	ctrlVar := strings.ToLower(u.sc.name) + "Controller"
 	return `You author Go unit tests for a converted service's controller layer.
 Deliverable shape (violations are rejected by automated gates):
 - Output ONLY ONE complete suite method: func (suite *` + u.suite + `) Test` + u.fn.Name + `() { ... }
 - No package clause, no imports, no other functions, no comments outside the method.
-- Table-driven: declare testCases := []struct{ desc string; mockInput []any; expectedError string; expectedOutput <response type> }{...} with a "StoreError" case (mockInput []any{nil, errors.New("store error")}) and a "Success" case.
+- Table-driven: declare testCases := []struct{ desc string; <one string field per request field> ; mockInput []any; expectedError string; expectedOutput <response type> }{...} with a "StoreError" case (mockInput []any{nil, errors.New("store error")}) and a "Success" case.
 - Iterate with for _, testCase := range testCases { suite.T().Run(testCase.desc, func(t *testing.T) { ... }) }.
-- Mock ONLY with suite.storeMock (a gomock mock): suite.storeMock.EXPECT().<Method>(<args>).Return(testCase.mockInput...) — never invent other mocks.
-- Call the controller exactly as the function under test does: suite.` + strings.ToLower(u.sc.name) + `Controller.` + u.fn.Name + `(suite.ctx, &request).
+- Mock ONLY with suite.` + storeVar + ` (a gomock mock): wrap every EXPECT in ` + "`" + `if testCase.mockInput != nil { ... }` + "`" + `, the ctx arg is gomock.Any(), and the remaining args are the concrete literals the function passes — never request references. Multi-call flows get one case field per call (mockInput, mockInput2, …), each guarded, EXPECTed in call order with matching Return payloads.
+- Build the request inside the subtest after the EXPECT block: request := &models.<RequestType>{<Field>: testCase.<Field>} and call suite.` + ctrlVar + `.` + u.fn.Name + `(suite.ctx, request).
 - Reproduce the function's field mapping EXACTLY: the Success expectedOutput must be what the function returns given the mocked rows — copy the mapping from the source, do not guess.
+- Validations: assert.ErrorContains(t, err, testCase.expectedError) on the error path; assert.NoError(t, err) and assert.Equal(t, actualOutput, testCase.expectedOutput) on success.
 - Use only the suite fields, models types, and imports listed in the prompt (errors, sql, time are available). Never reference packages outside them.
 - No commit/rollback, no t.Parallel, no time.Sleep.`
 }
@@ -80,14 +83,20 @@ Deliverable shape (violations are rejected by automated gates):
 func ctrlUserPrompt(u *unit, notes []string) string {
 	sc := u.sc
 	f := u.ctrl
+	storeVar := strings.ToLower(sc.name) + "Store"
+	ctrlVar := strings.ToLower(sc.name) + "Controller"
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "Service: %s · suite: %s · controller field: suite.%s (interface %s) · store mock field: suite.storeMock (%s)\n\n",
-		sc.name, u.suite, strings.ToLower(sc.name)+"Controller", ctrlIfaceName(sc), "db.Mock"+ctrlIfaceName(sc))
-	sb.WriteString("Suite fields available: suite.ctx (context.Context), suite.storeMock, suite." + strings.ToLower(sc.name) + "Controller\n\n")
+	fmt.Fprintf(&sb, "Service: %s · suite: %s · controller field: suite.%s (interface %s) · store mock field: suite.%s (%s)\n\n",
+		sc.name, u.suite, ctrlVar, ctrlIfaceName(sc), storeVar, "db.Mock"+dbIfaceName(sc))
+	sb.WriteString("Suite fields available: suite.ctx (context.Context), suite.mockController (*gomock.Controller), suite." + storeVar + " (store mock), suite." + ctrlVar + "\n\n")
 	sb.WriteString("Function under test (verbatim source):\n\n```go\n" + f.Src + "\n```\n\n")
 	sb.WriteString("Dependencies to mock (in call order):\n")
-	for _, c := range f.StoreCalls {
-		fmt.Fprintf(&sb, "  - suite.storeMock.%s(%s) — first arg suite.ctx, remaining args as the source passes them\n", c.Method, strings.Join(append([]string{"suite.ctx"}, c.Args...), ", "))
+	for i, c := range f.StoreCalls {
+		input := "mockInput"
+		if i > 0 {
+			input = fmt.Sprintf("mockInput%d", i+1)
+		}
+		fmt.Fprintf(&sb, "  - suite.%s.%s(%s) — case field %s; EXPECT ctx as gomock.Any(), remaining args as the concrete literals the source passes\n", storeVar, c.Method, strings.Join(c.Args, ", "), input)
 		if lit := mockReturnLiteral(sc, c.Method); lit != "nil" {
 			fmt.Fprintf(&sb, "    Return payload shape for the Success case: %s\n", lit)
 		}
@@ -102,9 +111,12 @@ func ctrlUserPrompt(u *unit, notes []string) string {
 			}
 		}
 	}
-	fmt.Fprintf(&sb, "\nRequest type: models.%s — assumed request value: %s\n", structBase(f.RequestType), requestLiteral(sc, f.RequestType))
+	fmt.Fprintf(&sb, "\nRequest type: models.%s — case fields (assumed values):\n", structBase(f.RequestType))
+	for _, fv := range sc.fixtures.FieldValues(structBase(f.RequestType)) {
+		fmt.Fprintf(&sb, "  - %s: %q\n", fv[0], fv[1])
+	}
 	fmt.Fprintf(&sb, "Response type: %s — assumed Success expectedOutput value: %s\n", f.ResponseType, responseLiteral(sc, f.ResponseType))
-	sb.WriteString("\nRules: the error case must exercise the store error path; the Success case must assert the exact mapped output (assert.Equal(t, testCase.expectedOutput, data)); multi-call flows EXPECT every call in order with matching Return payloads.")
+	sb.WriteString("\nRules: the error case must exercise the store error path; the Success case must assert the exact mapped output (assert.Equal(t, actualOutput, testCase.expectedOutput)); every EXPECT sits behind an `if testCase.<input> != nil` guard with gomock.Any() as the ctx matcher.")
 	if len(notes) > 0 {
 		sb.WriteString("\n\nEarlier attempts failed these gate checks — fix every listed problem:\n")
 		for _, n := range notes {
@@ -136,10 +148,21 @@ func extractGoBlock(content string) string {
 
 // gateCtrlBlock is the contract gate for LLM blocks: the block must parse
 // as one method on the right receiver with the right name, and must carry
-// the table-driven shape.
+// the reference contract — table-driven cases, every EXPECT inside an
+// `if testCase.mockInput… != nil` guard with a gomock.Any ctx matcher, and
+// the reference validations.
 func gateCtrlBlock(block string, u *unit) error {
 	if !strings.Contains(block, "testCases") {
 		return fmt.Errorf("block is not table-driven (no testCases declaration)")
+	}
+	if !strings.Contains(block, "gomock.Any()") {
+		return fmt.Errorf("store mock EXPECT does not use a gomock.Any() ctx matcher")
+	}
+	if !strings.Contains(block, "if testCase.mockInput") || !strings.Contains(block, "!= nil") {
+		return fmt.Errorf("EXPECT is not guarded by an `if testCase.mockInput… != nil` check")
+	}
+	if !strings.Contains(block, "assert.ErrorContains") || !strings.Contains(block, "assert.Equal(t, actualOutput, testCase.expectedOutput)") {
+		return fmt.Errorf("validations must be assert.ErrorContains on error + assert.NoError/assert.Equal(t, actualOutput, testCase.expectedOutput) on success")
 	}
 	src := "package gentestgate\n\n" + block
 	fset := token.NewFileSet()
@@ -147,7 +170,11 @@ func gateCtrlBlock(block string, u *unit) error {
 	if err != nil {
 		return fmt.Errorf("parse: %w", err)
 	}
+	// The request must be declared as a pointer inside the subtest
+	// (`request := &models.X{...}`, the reference shape) and the block must
+	// carry exactly one suite method.
 	count := 0
+	pointerReq := false
 	for _, d := range af.Decls {
 		fd, ok := d.(*ast.FuncDecl)
 		if !ok || fd.Recv == nil || len(fd.Recv.List) == 0 {
@@ -166,9 +193,28 @@ func gateCtrlBlock(block string, u *unit) error {
 			return fmt.Errorf("want one method func (suite *%s) Test%s(), got func on %s named %s", u.suite, u.fn.Name, recv, fd.Name.Name)
 		}
 		count++
+		if fd.Body != nil {
+			ast.Inspect(fd.Body, func(n ast.Node) bool {
+				as, ok := n.(*ast.AssignStmt)
+				if !ok || len(as.Rhs) == 0 {
+					return true
+				}
+				if amp, ok := as.Rhs[0].(*ast.UnaryExpr); ok && amp.Op == token.AND {
+					for _, l := range as.Lhs {
+						if id, ok := l.(*ast.Ident); ok && id.Name == "request" {
+							pointerReq = true
+						}
+					}
+				}
+				return true
+			})
+		}
 	}
 	if count != 1 {
 		return fmt.Errorf("want exactly one suite method, got %d", count)
+	}
+	if !pointerReq {
+		return fmt.Errorf("the request must be declared inside the subtest as `request := &models.<RequestType>{...}`")
 	}
 	return nil
 }

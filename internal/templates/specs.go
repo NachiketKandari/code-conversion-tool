@@ -280,37 +280,44 @@ type TestDBMethodData struct {
 	CallArgs   []string // rendered store-call args after ctx
 }
 
-// TestControllerFileData renders a controller test file — canonical shape
-// (the reference controller test file is empty): gomock store mock + suite.
+// TestControllerFileData renders a controller test file
+// (examples/nav/controller/nav_test.txt shape): gomock store mock built in
+// SetupTest, torn down with Finish, suite fields ctx/mockController/store/
+// controller.
 type TestControllerFileData struct {
 	TestHeaderData
 	Package   string // controller
-	DBPkg     string // db package import (MockNavStore lives there)
+	DBPkg     string // db package import (Mock<StoreIface> lives there)
 	LoggerPkg string
 	ModelsPkg string
-	SuiteName string // NavControllerSuite
-	CtrlVar   string // navController (controller under test)
-	CtrlIface string // NavController
-	MockVar   string // storeMock
-	MockType  string // db.MockNavStore
-	MockCtor  string // db.NewMockNavStore(gomock.NewController(suite.T()))
-	CtorCall  string // NewNavController(suite.storeMock)
+	SuiteName string // DemoControllerSuiteController
+	StoreVar  string // demoStore (the db.Mock<StoreIface> field)
+	CtrlVar   string // demoController (controller under test)
+	CtrlIface string // DemoController
+	MockType  string // db.MockDemoStore
+	MockCtor  string // db.NewMockDemoStore(suite.mockController)
+	CtorCall  string // NewDemoController(suite.demoStore)
+	NeedsSQL  bool   // database/sql import (sql.Null* mock-row literals)
+	NeedsTime bool   // time import (sql.NullTime / time.Now literals)
 	Methods   []string
 }
 
-// TestControllerMethodData renders one suite method: store-mock EXPECT in
-// body-call order + controller call + error/success assertions.
+// TestControllerMethodData renders one suite method: request fields as case
+// fields, guarded EXPECT (gomock.Any() ctx + concrete args) in body-call
+// order, request built from the case fields, ErrorContains / NoError+Equal
+// validations.
 type TestControllerMethodData struct {
-	SuiteName  string   // NavControllerSuite
-	CtrlVar    string   // navController
-	MockVar    string   // storeMock
-	Name       string   // NavList
-	StoreCall  string   // first store dependency (GetNavDetails)
-	StoreArgs  []string // EXPECT args after ctx (request field refs)
-	ReqExpr    string   // models.NavRequest{CompCode: "..."} — pre-rendered
-	MockReturn string   // []any{<store row literal>, nil} — pre-rendered
-	ExpectType string   // []*models.NavResponse
-	ExpectExpr string   // success expectedOutput literal — pre-rendered
+	SuiteName  string     // DemoControllerSuiteController
+	StoreVar   string     // demoStore
+	CtrlVar    string     // demoController
+	Name       string     // OrderDirect
+	StoreCall  string     // store dependency (GetOrderDetails)
+	StoreArgs  []string   // EXPECT args after ctx (concrete literals)
+	ReqFields  []ReqField // request fields driving the case struct
+	ReqExpr    string     // models.OrderRequest{CompCode: testCase.CompCode} — pointer added by the template
+	MockReturn string     // []any{<store row literal>, nil} — pre-rendered
+	ExpectType string     // []*models.OrderResponse
+	ExpectExpr string     // success expectedOutput literal — pre-rendered
 }
 
 // TestHandlerFileData renders a handler test file

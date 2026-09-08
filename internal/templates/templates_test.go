@@ -523,37 +523,46 @@ func TestRenderTestDBFile(t *testing.T) {
 
 func TestRenderTestControllerFile(t *testing.T) {
 	navListMethod := render(t, TestControllerMethod, TestControllerMethodData{
-		SuiteName: "NavControllerSuite", CtrlVar: "navController", MockVar: "storeMock",
-		Name: "NavList", StoreCall: "GetNavDetails", StoreArgs: []string{"request.CompCode"},
-		ReqExpr:    "models.NavRequest{CompCode: \"FML_COMP_CD\"}",
+		SuiteName: "NavControllerSuiteController", StoreVar: "navStore", CtrlVar: "navController",
+		Name: "NavList", StoreCall: "GetNavDetails", StoreArgs: []string{`"FML_COMP_CD"`},
+		ReqFields:  []ReqField{{Name: "CompCode", Value: "FML_COMP_CD"}},
+		ReqExpr:    "models.NavRequest{CompCode: testCase.CompCode}",
 		MockReturn: `[]any{[]*models.NavDetails{{CompCd: sql.NullString{String: "FML_COMP_CD", Valid: true}}}, nil}`,
 		ExpectType: "[]*models.NavResponse",
 		ExpectExpr: `[]*models.NavResponse{{CompCode: "FML_COMP_CD"}}`,
 	})
 	out := render(t, TestControllerFile, TestControllerFileData{
 		Package: "controller", DBPkg: testDBPkg, LoggerPkg: testLoggerPkg, ModelsPkg: testModelsPkg,
-		SuiteName: "NavControllerSuite", CtrlVar: "navController", CtrlIface: "NavController",
-		MockVar: "storeMock", MockType: "db.MockNavStore",
-		MockCtor: "db.NewMockNavStore(gomock.NewController(suite.T()))",
-		CtorCall: "NewNavController(suite.storeMock)",
-		Methods:  []string{navListMethod},
+		SuiteName: "NavControllerSuiteController", StoreVar: "navStore", CtrlVar: "navController", CtrlIface: "NavController",
+		MockType: "db.MockNavStore",
+		MockCtor: "db.NewMockNavStore(suite.mockController)",
+		CtorCall: "NewNavController(suite.navStore)",
+		NeedsSQL: true, NeedsTime: true,
+		Methods: []string{navListMethod},
 	})
 	parseTestFile(t, "nav_test.go", out)
 
 	for _, want := range []string{
-		"storeMock *db.MockNavStore",
-		"db.NewMockNavStore(gomock.NewController(suite.T()))",
-		"NewNavController(suite.storeMock)",
-		"func (suite *NavControllerSuite) TestNavList() {",
-		"request := models.NavRequest{CompCode: \"FML_COMP_CD\"}",
-		"GetNavDetails(suite.ctx, request.CompCode)",
+		"mockController *gomock.Controller",
+		"navStore *db.MockNavStore",
+		"db.NewMockNavStore(suite.mockController)",
+		"NewNavController(suite.navStore)",
+		"suite.mockController.Finish()",
+		"func (suite *NavControllerSuiteController) TestNavList() {",
+		"CompCode:     \"FML_COMP_CD\",",
+		"request := &models.NavRequest{CompCode: testCase.CompCode}",
+		"GetNavDetails(gomock.Any(), \"FML_COMP_CD\")",
 		"Return(testCase.mockInput...)",
-		"suite.navController.NavList(suite.ctx, &request)",
-		"assert.Nil(t, data)",
+		"suite.navController.NavList(suite.ctx, request)",
+		"assert.ErrorContains(t, err, testCase.expectedError)",
+		"assert.Equal(t, actualOutput, testCase.expectedOutput)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("controller test file missing %q\n---\n%s", want, out)
 		}
+	}
+	if !strings.Contains(out, "\"database/sql\"") || !strings.Contains(out, "\"time\"") {
+		t.Errorf("controller test file needs conditional sql/time imports\n---\n%s", out)
 	}
 }
 

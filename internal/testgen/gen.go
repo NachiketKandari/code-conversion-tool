@@ -362,17 +362,25 @@ func renderUnit(ctx context.Context, u *unit, opts Options) *block {
 }
 
 // outNames picks the output test file and suite name for a layer: the
-// reference shape (<service>.go → <service>_test.go, <Svc><Noun>Suite) when
-// the layer has no test files; a gentest-suffixed twin when it does, so
-// existing suites are never touched.
+// reference shape (<service>.go → <service>_test.go, <Svc><Noun>Suite —
+// the controller layer's reference appends the layer noun again,
+// <Svc>ControllerSuiteController) when the layer has no test files; a
+// gentest-suffixed twin when it does, so existing suites are never touched.
 func outNames(sc *serviceCtx, layer testscan.Layer, dir string) (file, suite string) {
 	noun := map[testscan.Layer]string{
 		testscan.LayerDB:         "Store",
 		testscan.LayerController: "Controller",
 		testscan.LayerHandler:    "Handler",
 	}[layer]
+	tail := "Suite"
+	if layer == testscan.LayerController {
+		tail = "SuiteController"
+	}
 	base := strings.ToUpper(sc.name[:1]) + sc.name[1:]
 	if len(testFiles(dir)) > 0 {
+		if layer == testscan.LayerController {
+			return sc.name + "_gentest_test.go", base + noun + tail + "Gen"
+		}
 		return sc.name + "_gentest_test.go", base + noun + "GenSuite"
 	}
 	stem := sc.name
@@ -387,7 +395,7 @@ func outNames(sc *serviceCtx, layer testscan.Layer, dir string) (file, suite str
 			stem = strings.TrimSuffix(src[0], ".go")
 		}
 	}
-	return stem + "_test.go", base + noun + "Suite"
+	return stem + "_test.go", base + noun + tail
 }
 
 // outPathFor computes the staged output path: module-root-relative when the
@@ -428,6 +436,7 @@ func composeFile(sc *serviceCtx, layer testscan.Layer, outFile, suite string, me
 			Methods:        methods,
 		})
 	case testscan.LayerController:
+		joined := strings.Join(methods, "\n")
 		out, err = prov.Render(templates.TestControllerFile, templates.TestControllerFileData{
 			TestHeaderData: templates.TestHeaderData{MockGenCmd: mockCmd, CoverageCmd: covCmd},
 			Package:        "controller",
@@ -435,12 +444,14 @@ func composeFile(sc *serviceCtx, layer testscan.Layer, outFile, suite string, me
 			LoggerPkg:      sc.module + "/pkg/logger",
 			ModelsPkg:      sc.module + "/pkg/services/" + sc.name + "/models",
 			SuiteName:      suite,
+			StoreVar:       strings.ToLower(sc.name) + "Store",
 			CtrlVar:        strings.ToLower(sc.name) + "Controller",
 			CtrlIface:      ctrlIfaceName(sc),
-			MockVar:        "storeMock",
-			MockType:       "db.Mock" + ctrlIfaceName(sc),
-			MockCtor:       "db.NewMock" + ctrlIfaceName(sc) + "(gomock.NewController(suite.T()))",
+			MockType:       "db.Mock" + dbIfaceName(sc),
+			MockCtor:       "db.NewMock" + dbIfaceName(sc) + "(suite.mockController)",
 			CtorCall:       ctrlCtorCall(sc),
+			NeedsSQL:       strings.Contains(joined, "sql.Null"),
+			NeedsTime:      strings.Contains(joined, "time."),
 			Methods:        methods,
 		})
 	case testscan.LayerHandler:
@@ -631,7 +642,7 @@ func ctrlCtorCall(sc *serviceCtx) string {
 	if name == "" {
 		name = "New" + ctrlIfaceName(sc)
 	}
-	return name + "(suite.storeMock)"
+	return name + "(suite." + strings.ToLower(sc.name) + "Store)"
 }
 
 func handlerCtorCall(sc *serviceCtx) string {

@@ -141,13 +141,28 @@ func renderDBMethod(u *unit) (string, error) {
 	})
 }
 
-// storeMethodArgs renders EXPECT args for a store call: request-field
-// selectors and literals pass through verbatim, anything else degrades to a
-// fixture placeholder.
-func storeMethodArgs(sc *serviceCtx, args []string) []string {
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		if strings.HasPrefix(a, "request.") || isGoLiteral(a) {
+// ctrlExpectArgs renders the EXPECT args for a controller's store call as
+// concrete literals (examples/nav/controller shape): request-field selectors
+// resolve to the same assumed fixture value the case struct carries, plain
+// literals pass through verbatim, anything else degrades to a fixture
+// placeholder — never a request reference (the EXPECT block precedes the
+// request declaration in the reference shape).
+func ctrlExpectArgs(sc *serviceCtx, f *ctrlFact, call storeCall) []string {
+	fields := map[string]string{}
+	for _, fv := range sc.fixtures.FieldValues(structBase(f.RequestType)) {
+		fields[fv[0]] = fv[1]
+	}
+	out := make([]string, 0, len(call.Args))
+	for _, a := range call.Args {
+		if field, ok := strings.CutPrefix(a, "request."); ok {
+			if v, found := fields[field]; found {
+				out = append(out, fmt.Sprintf("%q", v))
+				continue
+			}
+			out = append(out, sc.fixtures.ArgValue(field, "string"))
+			continue
+		}
+		if isGoLiteral(a) {
 			out = append(out, a)
 			continue
 		}
@@ -166,20 +181,6 @@ func isGoLiteral(a string) bool {
 		return true
 	}
 	return a == "true" || a == "false" || a == "nil" || strings.HasPrefix(a, "time.")
-}
-
-// requestLiteral renders a request-struct composite literal from fixture
-// values: models.NavRequest{CompCode: "fml_comp_cd"}.
-func requestLiteral(sc *serviceCtx, requestType string) string {
-	base := structBase(requestType)
-	var fields []string
-	for _, fv := range sc.fixtures.FieldValues(base) {
-		fields = append(fields, fv[0]+": "+fmt.Sprintf("%q", fv[1]))
-	}
-	if len(fields) == 0 {
-		return "models." + base + "{}"
-	}
-	return "models." + base + "{" + strings.Join(fields, ", ") + "}"
 }
 
 // responseLiteral renders a response-struct literal (one element) from
@@ -220,20 +221,30 @@ func mockReturnLiteral(sc *serviceCtx, method string) string {
 	}
 }
 
-// renderCtrlMethod renders one passthrough controller suite method block.
+// renderCtrlMethod renders one passthrough controller suite method block:
+// request fields as case fields, guarded EXPECT with a gomock.Any ctx
+// matcher and concrete args, request built from the case fields.
 func renderCtrlMethod(u *unit) (string, error) {
 	sc := u.sc
 	f := u.ctrl
 	call := f.StoreCalls[0]
+	reqBase := structBase(f.RequestType)
+	var reqFields []templates.ReqField
+	var caseRefs []string
+	for _, fv := range sc.fixtures.FieldValues(reqBase) {
+		reqFields = append(reqFields, templates.ReqField{Name: fv[0], Value: fv[1]})
+		caseRefs = append(caseRefs, fv[0]+": testCase."+fv[0])
+	}
 	prov := templates.NewEmbeddedProvider()
 	return prov.Render(templates.TestControllerMethod, templates.TestControllerMethodData{
 		SuiteName:  u.suite,
+		StoreVar:   strings.ToLower(sc.name) + "Store",
 		CtrlVar:    strings.ToLower(sc.name) + "Controller",
-		MockVar:    "storeMock",
 		Name:       f.Name,
 		StoreCall:  call.Method,
-		StoreArgs:  storeMethodArgs(sc, call.Args),
-		ReqExpr:    requestLiteral(sc, f.RequestType),
+		StoreArgs:  ctrlExpectArgs(sc, f, call),
+		ReqFields:  reqFields,
+		ReqExpr:    "models." + reqBase + "{" + strings.Join(caseRefs, ", ") + "}",
 		MockReturn: mockReturnLiteral(sc, call.Method),
 		ExpectType: f.ResponseType,
 		ExpectExpr: responseLiteral(sc, f.ResponseType),

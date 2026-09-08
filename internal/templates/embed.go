@@ -52,8 +52,7 @@ const (
 
 	// Post-conversion Go test target (PRD-2026-09-09 GT-2): the gentest
 	// layer templates, distilled from the examples/nav reference
-	// conversions (controller = canonical shape — the reference file is
-	// empty).
+	// conversions.
 	TestDBFile           ID = "test_db_file"
 	TestDBMethod         ID = "test_db_method"
 	TestControllerFile   ID = "test_controller_file"
