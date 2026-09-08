@@ -145,9 +145,13 @@ func isWordChar(c byte) bool {
 
 // normalizeSQL tokenizes and canonicalizes table aliases: `FROM DEMO_PRICE p`
 // rewrites every later bare `p` to the table, so a renamed alias disappears
-// from the comparison while a renamed table still flags (PF-6.2).
+// from the comparison while a renamed table still flags (PF-6.2). Pro*C
+// host-variable INTO lists (`SELECT ... INTO :a, :b FROM`) are dropped from
+// both sides — the INTO clause is a Pro*C construct, not SQL (BP-8: the
+// python target strips it for oracledb executability, so it is tolerance,
+// never a deviation).
 func normalizeSQL(sql string) []sqlToken {
-	toks := tokenize(sql)
+	toks := dropIntoLists(tokenize(sql))
 	aliases := aliasMap(toks)
 	if len(aliases) == 0 {
 		return toks
@@ -160,6 +164,25 @@ func normalizeSQL(sql string) []sqlToken {
 			}
 		}
 		out[i] = t
+	}
+	return out
+}
+
+// dropIntoLists removes `INTO :a, :b, …` spans (an INTO followed by bind
+// tokens and commas, ending at the first non-bind token). `INSERT INTO t`
+// (INTO followed by a word) is untouched.
+func dropIntoLists(toks []sqlToken) []sqlToken {
+	var out []sqlToken
+	for i := 0; i < len(toks); i++ {
+		if toks[i].Kind == tokWord && toks[i].Text == "into" && i+1 < len(toks) && toks[i+1].Kind == tokBind {
+			j := i + 1
+			for j < len(toks) && (toks[j].Kind == tokBind || (toks[j].Kind == tokPunct && toks[j].Text == ",")) {
+				j++
+			}
+			i = j - 1
+			continue
+		}
+		out = append(out, toks[i])
 	}
 	return out
 }

@@ -10,10 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/convert"
+	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/ledger"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/plan"
@@ -27,13 +30,15 @@ import (
 // controller body is filled through the LLM seam from the query-replaced
 // branch view. Output lands in the target module when paths.mainGo resolves,
 // else under paths.staged (the two-laptop degrade); the ledger makes runs
-// resumable; every unit leaves an audit record.
+// resumable; every unit leaves an audit record. When the target directory
+// holds several Tuxedo entry files, one worker converts each service
+// end-to-end in parallel (convert_dir.go), each in its own output subtree.
 func runConvert(ctx context.Context, args []string) error {
 	log := telemetry.Log(ctx)
 	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
-	mappingPath := fs.String("mapping", "", "User mapping YAML (default: convert.mapping from config)")
+	mappingPath := fs.String("mapping", "", "User mapping YAML, or a directory of per-service yamls (each with source: <entry file>) when the target dir holds multiple services (default: convert.mapping from config)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
-	baseDir := fs.String("base", "", "Output base directory override (default: target module root when paths.mainGo resolves, else paths.staged)")
+	baseDir := fs.String("base", "", "Output base directory override (default: target module root when paths.mainGo resolves, else paths.staged; dir fan-out appends each service name)")
 	noLLM := fs.Bool("no-llm", false, "Deterministic-only run: skip controller bodies (overrides run.llm)")
 	fragment := fs.Bool("fragment", false, "Force fragment mode on a single-file input (PF-3.1)")
 
@@ -58,41 +63,17 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 	*mappingPath = mappingResolved
 
-	mapping, err := plan.LoadMapping(*mappingPath)
+	files, mains, err := extractPlanIR(target, cfg, *fragment)
 	if err != nil {
 		return err
 	}
-	files, main, err := extractPlanIR(target, cfg, *fragment)
-	if err != nil {
-		return err
-	}
-	src, err := os.ReadFile(main.Path)
-	if err != nil {
-		return fmt.Errorf("convert: read source: %w", err)
-	}
+
+	// Run-wide wiring: one LLM client, budget, validator, and audit
+	// recorder cover every service in the run — the fan-out shares them
+	// (the client is stateless, the budget immutable, the validator a
+	// stateless options holder, the recorder mutex-guarded).
 	b := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
-	p, err := plan.Build(plan.Options{Main: main, Source: string(src), FnFiles: files, Mapping: mapping, Budget: b})
-	if err != nil {
-		return err
-	}
-
-	base := *baseDir
-	degrade := ""
-	if base == "" {
-		if root, rootErr := validate.ResolveModuleRoot(cfg.Paths.MainGo); rootErr == nil && cfg.Paths.MainGo != "" {
-			base = root
-		} else {
-			base = cfg.Paths.Staged
-			degrade = "generated code staged under " + base + " (target service absent: set paths.mainGo to compile there)"
-		}
-	}
-
-	led, err := ledger.Load(cfg.Paths.Ledger, mapping.Service)
-	if err != nil {
-		return err
-	}
 	v := validate.New(validate.Options{MainGo: cfg.Paths.MainGo, Compile: cfg.ValidateCfg.Compile, RunSmoke: cfg.ValidateCfg.Run})
-
 	llmEnabled := cfg.Run.LLM && !*noLLM
 	var client llm.Client
 	if llmEnabled {
@@ -109,30 +90,99 @@ func runConvert(ctx context.Context, args []string) error {
 		log.Info("llm disabled — deterministic-only run, controller bodies will be skipped")
 		client = nil
 	}
-
 	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
 	if err != nil {
 		log.Warn("audit archive unavailable", "error", err)
 		rec = nil
 	}
+	w := &convertWiring{
+		cfg: cfg, budget: b, validator: v, client: client,
+		audit: rec, llmEnabled: llmEnabled,
+	}
 
-	res, err := convert.Run(ctx, convert.Options{
-		Plan: p, Main: main, Source: string(src), FnFiles: files,
-		Client: client, Budget: b, BaseDir: base,
-		Ledger: led, Validator: v, MaxRetries: cfg.ValidateCfg.MaxRetries, Audit: rec,
-		Workers: cfg.Concurrency.Workers,
-		SkipLLM: !llmEnabled, WithGorm: cfg.DB.WithGorm,
-	})
+	baseRoot, degrade := resolveBaseRoot(*baseDir, cfg)
+	if len(mains) > 1 {
+		return runConvertFanout(ctx, w, target, mains, files, *mappingPath, baseRoot, degrade)
+	}
+
+	mapping, err := plan.LoadMapping(*mappingPath)
 	if err != nil {
 		return err
 	}
-	if rec != nil {
-		if _, err := rec.Write(mapping.Service+"_ledger.json", func(w io.Writer) error {
+	res, led, err := convertOneService(ctx, w, mains[0], files, mapping, baseRoot, cfg.Concurrency.Workers)
+	if err != nil {
+		return err
+	}
+	printServiceSummary(mapping.Service, res, led, baseRoot, degrade)
+	return nil
+}
+
+// convertWiring carries one convert invocation's shared, concurrency-safe
+// collaborators: the LLM client (stateless), token budget (immutable
+// value), validator (stateless options holder), and audit recorder
+// (mutex-guarded Write).
+type convertWiring struct {
+	cfg        *config.Config
+	budget     budget.Budget
+	validator  *validate.Validator
+	client     llm.Client
+	audit      *audit.Recorder
+	llmEnabled bool
+}
+
+// resolveBaseRoot resolves the run's output base: the -base override wins,
+// else the target module root when paths.mainGo resolves, else the staged
+// tree with the two-laptop degrade note.
+func resolveBaseRoot(baseFlag string, cfg *config.Config) (root, degrade string) {
+	if baseFlag != "" {
+		return baseFlag, ""
+	}
+	if root, err := validate.ResolveModuleRoot(cfg.Paths.MainGo); err == nil && cfg.Paths.MainGo != "" {
+		return root, ""
+	}
+	return cfg.Paths.Staged, "generated code staged under " + cfg.Paths.Staged + " (target service absent: set paths.mainGo to compile there)"
+}
+
+// convertOneService runs the full per-service pipeline: plan build, ledger
+// load, convert.Run (deterministic scaffold + LLM controller bodies), the
+// ledger audit copy, and mock regeneration. base is this service's isolated
+// output root (the shared baseRoot in single-service mode, a per-service
+// subtree in dir fan-out); workers sizes the inner DB-render pool.
+func convertOneService(ctx context.Context, w *convertWiring, main *ir.File, files []*ir.File, mapping *plan.Mapping, base string, workers int) (*convert.Result, *ledger.Ledger, error) {
+	log := telemetry.Log(ctx)
+	start := time.Now()
+	log.Info("convert service started", "service", mapping.Service, "source", main.Path, "base", base)
+	src, err := os.ReadFile(main.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("convert: read source: %w", err)
+	}
+	p, err := plan.Build(plan.Options{Main: main, Source: string(src), FnFiles: files, Mapping: mapping, Budget: w.budget})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	led, err := ledger.Load(w.cfg.Paths.Ledger, mapping.Service)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	res, err := convert.Run(ctx, convert.Options{
+		Plan: p, Main: main, Source: string(src), FnFiles: files,
+		Client: w.client, Budget: w.budget, BaseDir: base,
+		Ledger: led, Validator: w.validator, MaxRetries: w.cfg.ValidateCfg.MaxRetries, Audit: w.audit,
+		Workers: workers,
+		SkipLLM: !w.llmEnabled, WithGorm: w.cfg.DB.WithGorm,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if w.audit != nil {
+		if _, err := w.audit.Write(mapping.Service+"_ledger.json", func(wr io.Writer) error {
 			data, merr := json.MarshalIndent(led, "", "  ")
 			if merr != nil {
 				return merr
 			}
-			_, werr := w.Write(data)
+			_, werr := wr.Write(data)
 			return werr
 		}); err != nil {
 			log.Warn("audit archive write failed", "error", err)
@@ -140,10 +190,19 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 
 	runMocks(ctx, base, p)
+	log.Info("convert service completed",
+		"service", mapping.Service, "base", base,
+		"files", len(res.Files), "llm_calls", res.LLMCalls,
+		"duration_ms", time.Since(start).Milliseconds())
+	return res, led, nil
+}
 
+// printServiceSummary reports one service's run outcome — the same lines in
+// single-service and fan-out mode.
+func printServiceSummary(service string, res *convert.Result, led *ledger.Ledger, base, degrade string) {
 	appended, failed, blocked, skipped, placeholders, deviated := led.Counts()
 	fmt.Printf("%s: %d files written under %s — units: %d appended, %d failed, %d blocked, %d skipped, %d placeholders, %d sql deviations, %d llm calls\n",
-		mapping.Service, len(res.Files), base, appended, failed, blocked, skipped, placeholders, deviated, res.LLMCalls)
+		service, len(res.Files), base, appended, failed, blocked, skipped, placeholders, deviated, res.LLMCalls)
 	if degrade != "" {
 		fmt.Println("  note:", degrade)
 	}
@@ -164,7 +223,6 @@ func runConvert(ctx context.Context, args []string) error {
 	for _, bl := range res.Blocked {
 		fmt.Println("  blocked:", bl)
 	}
-	return nil
 }
 
 // runMocks regenerates the uber-go/mock doubles when the mockgen binary and

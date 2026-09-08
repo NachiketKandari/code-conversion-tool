@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 )
 
 // Recorder owns one run's audit folder.
 type Recorder struct {
+	mu  sync.Mutex
 	dir string
 }
 
@@ -34,11 +36,14 @@ func (r *Recorder) Dir() string { return r.dir }
 
 // Write persists one named artifact by streaming it through produce and
 // returns the written path. name must be a plain file name — nested per-unit
-// folders get a dedicated API in Phase 1.
+// folders get a dedicated API in Phase 1. Safe for concurrent callers (the
+// dir-mode convert fan-out shares one Recorder across service workers).
 func (r *Recorder) Write(name string, produce func(w io.Writer) error) (string, error) {
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return "", fmt.Errorf("audit: invalid artifact name %q", name)
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	path := filepath.Join(r.dir, name)
 	f, err := os.Create(path)
 	if err != nil {

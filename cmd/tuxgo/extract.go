@@ -125,6 +125,18 @@ func resolveInput(positional []string, cfg *config.Config) (string, error) {
 	return "", fmt.Errorf("no input target: pass a .pc/.pcf file or directory, or set convert.input in .tuxgo.yaml")
 }
 
+// resolveBatchInput picks the batchpy conversion target: the CLI positional
+// wins, else batchpy.input from the yaml, else an error naming both sources.
+func resolveBatchInput(positional []string, cfg *config.Config) (string, error) {
+	if len(positional) > 0 {
+		return positional[0], nil
+	}
+	if cfg.Batchpy.Input != "" {
+		return cfg.Batchpy.Input, nil
+	}
+	return "", fmt.Errorf("no input target: pass a .pc/.pcf file or directory, or set batchpy.input in .tuxgo.yaml")
+}
+
 // resolveMapping picks the endpoint mapping: the -mapping flag wins, else
 // convert.mapping from the yaml, else an error naming both sources.
 func resolveMapping(flagValue string, cfg *config.Config) (string, error) {

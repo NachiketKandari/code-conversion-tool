@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"go/token"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -36,8 +37,12 @@ type Endpoint struct {
 
 // Mapping is the user-specified conversion mapping (F3 run input): the
 // target service identity plus which conditions become endpoints. Loaded
-// from a small YAML file the user edits.
+// from a small YAML file the user edits. Source is optional and only used
+// by dir-mode convert fan-out: it names the entry .pc/.pcf file (bare file
+// name) this mapping converts, letting one mapping directory cover a
+// multi-service corpus.
 type Mapping struct {
+	Source     string               `yaml:"source"`
 	Service    string               `yaml:"service"`
 	Module     string               `yaml:"module"`
 	ReadDBs    []string             `yaml:"readDBs"`
@@ -68,6 +73,11 @@ func LoadMapping(path string) (*Mapping, error) {
 // least one endpoint, unique Go method names and condition indices, valid
 // identifiers, routes under the group.
 func (m *Mapping) Validate() error {
+	if m.Source != "" {
+		if err := validEntryName(m.Source); err != nil {
+			return err
+		}
+	}
 	if m.Service == "" {
 		return fmt.Errorf("service must not be empty")
 	}
@@ -119,4 +129,18 @@ func (m *Mapping) ImportPath(folder string) string {
 		return m.Module
 	}
 	return m.Module + "/" + folder
+}
+
+// validEntryName enforces the dir-mode source reference: a bare .pc/.pcf
+// file name — no directories, no other extensions — so the entry-file match
+// stays a plain basename comparison.
+func validEntryName(name string) error {
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return fmt.Errorf("source %q must be a bare .pc/.pcf file name", name)
+	}
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext != ".pc" && ext != ".pcf" {
+		return fmt.Errorf("source %q must end in .pc or .pcf", name)
+	}
+	return nil
 }

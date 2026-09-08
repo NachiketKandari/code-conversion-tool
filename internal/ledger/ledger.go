@@ -81,6 +81,10 @@ func Load(dir, service string) (*Ledger, error) {
 	return l, nil
 }
 
+// Fresh reports whether the ledger carries no unit records — a first run,
+// not a resume.
+func (l *Ledger) Fresh() bool { return len(l.Units) == 0 }
+
 // Get returns the unit's entry, creating a planned one on first touch.
 func (l *Ledger) Get(id, kind, name string) *Entry {
 	if e, ok := l.Units[id]; ok {

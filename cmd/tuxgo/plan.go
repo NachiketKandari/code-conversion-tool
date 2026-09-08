@@ -62,10 +62,15 @@ func runPlan(ctx context.Context, args []string) error {
 		"endpoints", len(mapping.Endpoints),
 		"db_method_pins", len(mapping.DBMethods))
 
-	files, main, err := extractPlanIR(target, cfg, *fragment)
+	files, mains, err := extractPlanIR(target, cfg, *fragment)
 	if err != nil {
 		return err
 	}
+	if len(mains) > 1 {
+		return fmt.Errorf("plan: %s holds multiple Tuxedo entries (%s, %s) — plan a single file at a time",
+			target, mains[0].Entry, mains[1].Entry)
+	}
+	main := mains[0]
 	logFileIR(ctx, main)
 
 	src, err := os.ReadFile(main.Path)
@@ -111,8 +116,10 @@ func runPlan(ctx context.Context, args []string) error {
 // extractPlanIR extracts the IR for the plan: file mode returns that file
 // (fragments auto-detected when the file holds no entry and no function
 // definitions, PF-3.1; -fragment forces it); directory mode returns all
-// files and picks the one with a Tuxedo entry.
-func extractPlanIR(target string, cfg *config.Config, forceFragment bool) ([]*ir.File, *ir.File, error) {
+// files plus every file with a Tuxedo entry. Callers enforce their own
+// service contract: runPlan requires exactly one entry; runConvert fans out
+// one worker per entry when the directory holds several.
+func extractPlanIR(target string, cfg *config.Config, forceFragment bool) ([]*ir.File, []*ir.File, error) {
 	fi, err := os.Stat(target)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cannot access target path %s: %w", target, err)
@@ -122,26 +129,22 @@ func extractPlanIR(target string, cfg *config.Config, forceFragment bool) ([]*ir
 		if err != nil {
 			return nil, nil, err
 		}
-		return []*ir.File{main}, main, nil
+		return []*ir.File{main}, []*ir.File{main}, nil
 	}
 	files, err := ir.ExtractDirOpts(target, irOptions(cfg, false))
 	if err != nil {
 		return nil, nil, err
 	}
-	var main *ir.File
+	var mains []*ir.File
 	for _, f := range files {
 		if f.Entry != "" && f.Entry != "__fragment" {
-			if main != nil {
-				return nil, nil, fmt.Errorf("plan: %s holds multiple Tuxedo entries (%s, %s) — plan a single file at a time",
-					target, main.Entry, f.Entry)
-			}
-			main = f
+			mains = append(mains, f)
 		}
 	}
-	if main == nil {
+	if len(mains) == 0 {
 		return nil, nil, fmt.Errorf("plan: no .pc file in %s declares a Tuxedo entry function", target)
 	}
-	return files, main, nil
+	return files, mains, nil
 }
 
 func countKind(p *plan.Plan, k plan.Kind) int {

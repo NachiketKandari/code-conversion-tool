@@ -69,6 +69,7 @@ func Default() *Config {
 		DB:          DB{WithGorm: false},
 		Buffers:     DefaultBuffers(),
 		Paths:       DefaultPaths(),
+		Batchpy:     DefaultBatchpy(),
 	}
 }
 
@@ -127,6 +128,53 @@ type Config struct {
 	Convert     Convert     `yaml:"convert"`
 	Buffers     Buffers     `yaml:"buffers"`
 	Paths       Paths       `yaml:"paths"`
+	Batchpy     Batchpy     `yaml:"batchpy"`
+}
+
+// Batchpy carries the batch→Python conventions (PRD-2026-09-08 BP-7):
+// wrapper-seam spellings the generated code imports, the entrypoint name,
+// and the shape/DML-loop defaults the CLI flags override.
+// Batchpy carries the batch→Python conventions (PRD-2026-09-08 BP-7).
+type Batchpy struct {
+	// Input is the .pc/.pcf file or directory converted when the CLI passes
+	// no positional target (same seam as convert.input).
+	Input string `yaml:"input"`
+	// WrapperModule is the generated import path of the db-router wrapper.
+	WrapperModule string `yaml:"wrapperModule"`
+	// RouterClass is the wrapper class exposed by WrapperModule.
+	RouterClass string `yaml:"routerClass"`
+	// ReadMode/WriteMode are the wrapper's connection-mode spellings.
+	ReadMode  string `yaml:"readMode"`
+	WriteMode string `yaml:"writeMode"`
+	// LoggerPrefix prefixes the generated logger name ("app.<module>").
+	LoggerPrefix string `yaml:"loggerPrefix"`
+	// Entrypoint is the unified runner method the service exposes.
+	Entrypoint string `yaml:"entrypoint"`
+	// Shape is the default shape rubric override: auto | repo.
+	Shape string `yaml:"shape"`
+	// DMLLoop is the default cursor-DML semantics: batch | rowbyrow.
+	DMLLoop string `yaml:"dmlLoop"`
+	// ChunkSize is the executemany chunk size (batch mode).
+	ChunkSize int `yaml:"chunkSize"`
+	// OutDir is the default output directory for generated modules.
+	OutDir string `yaml:"outDir"`
+}
+
+// DefaultBatchpy returns the reference-codebase conventions (the
+// pythonEqTux examples' wrapper contract).
+func DefaultBatchpy() Batchpy {
+	return Batchpy{
+		WrapperModule: "core.db_router",
+		RouterClass:   "DatabaseRouter",
+		ReadMode:      "DbMode.READ",
+		WriteMode:     "DbMode.WRITE",
+		LoggerPrefix:  "app.",
+		Entrypoint:    "process_daily_batch",
+		Shape:         "auto",
+		DMLLoop:       "batch",
+		ChunkSize:     1000,
+		OutDir:        "python_out",
+	}
 }
 
 // Buffers is the config-extensible FML buffer-role registry (PF-4.1):

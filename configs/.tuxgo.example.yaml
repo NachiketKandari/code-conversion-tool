@@ -93,6 +93,20 @@ validate:                    # gofmt → go build → go vet → go test loop (G
                              #   never  — skip Tier B even when it could run
   run: false                 # smoke `go run .` after a green Tier B
 
+batchpy:                     # batch→Python conventions (PRD-2026-09-08 BP-7)
+  input: ""                  # .pc/.pcf file or directory converted when the CLI passes no
+                             # positional target (mirrors convert.input for the Go path)
+  wrapperModule: core.db_router  # the generated import of the db-router wrapper
+  routerClass: DatabaseRouter    # the wrapper class + DbMode modes below
+  readMode: DbMode.READ          # connection mode for SELECTs
+  writeMode: DbMode.WRITE        # connection mode for DML
+  loggerPrefix: "app."           # logger name = prefix + <service_name>
+  entrypoint: process_daily_batch  # the unified runner method the service exposes
+  shape: auto                    # auto = rubric by complexity | repo = always repository
+  dmlLoop: batch                 # batch = fetchall + chunked executemany | rowbyrow = per-row execute
+  chunkSize: 1000                # executemany chunk size (batch mode)
+  outDir: python_out             # default output directory for generated modules
+
 paths:
   tux: tux/                    # the .pc corpus to convert (OQ19 default: "convert this .pc" locates it here)
   target: ../existing-go-service # existing service: models/db/controller/handler — generated code plugs in (R8)

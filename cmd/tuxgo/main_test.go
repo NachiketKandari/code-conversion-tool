@@ -5,8 +5,11 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/Public/convert-tux-to-go/internal/config"
 )
 
 func TestNewRunIDFormat(t *testing.T) {
@@ -157,5 +160,25 @@ func TestExtractGlobalFlags(t *testing.T) {
 		if !reflect.DeepEqual(rest, tc.rest) {
 			t.Errorf("%s: rest = %v, want %v", tc.name, rest, tc.rest)
 		}
+	}
+}
+
+// TestResolveBatchInput pins the yaml-driven input seam for batchpy: the
+// CLI positional wins, else batchpy.input supplies the target (mirroring
+// convert.input), else the error names both sources.
+func TestResolveBatchInput(t *testing.T) {
+	cfg := config.Default()
+	cfg.Batchpy.Input = "tux/batch"
+
+	got, err := resolveBatchInput([]string{"cli.pc"}, cfg)
+	if err != nil || got != "cli.pc" {
+		t.Errorf("positional = %q, %v; want cli.pc, nil", got, err)
+	}
+	got, err = resolveBatchInput(nil, cfg)
+	if err != nil || got != "tux/batch" {
+		t.Errorf("yaml fallback = %q, %v; want tux/batch, nil", got, err)
+	}
+	if _, err := resolveBatchInput(nil, config.Default()); err == nil || !strings.Contains(err.Error(), "batchpy.input") {
+		t.Errorf("no-target err = %v, want batchpy.input guidance", err)
 	}
 }

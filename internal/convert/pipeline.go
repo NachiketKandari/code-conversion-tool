@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -79,6 +80,21 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		return nil, err
 	}
 	res := &Result{}
+
+	// Staged-collision guard (live-eval finding, 2026-09-08): a fresh run
+	// must not write into a staged tree left by a previous run —
+	// controller/db files accumulate, so the generations would silently mix
+	// (observed: two generations of the same methods in one file). A fresh
+	// ledger plus an existing target file is a hard error: clear the
+	// previous run's tree or resume with its ledger.
+	if opts.Ledger.Fresh() {
+		probe, perr := opts.absPath(opts.BaseDir, svc.Mapping.ImportPath("models")+"/"+svc.Mapping.Service+".go")
+		if perr == nil {
+			if _, serr := os.Stat(probe); serr == nil {
+				return nil, fmt.Errorf("convert: output already exists (%s) but the ledger is fresh — clear the previous run's tree or resume with its ledger", probe)
+			}
+		}
+	}
 
 	// Blocked endpoints (unresolved external fns) — visible, never silent.
 	blockedEndpoints := map[string]string{}
@@ -302,6 +318,11 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 			recordAttempt(ctx, opts, u, attempt, prompt, response.Content, verr)
 			continue
 		}
+		if verr := requiredCallErrs(view.Source, body); len(verr) > 0 {
+			lastErrs = verr
+			recordAttempt(ctx, opts, u, attempt, prompt, response.Content, verr)
+			continue
+		}
 		recordAttempt(ctx, opts, u, attempt, prompt, response.Content, nil)
 		opts.Ledger.Set(u.ID, ledger.StatusValidated, "")
 		return body, prompt, nil
@@ -311,26 +332,61 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 
 const systemPrompt = `You convert one legacy Pro*C/Tuxedo branch into the body of a Go controller method.
 Rules:
-- Emit ONLY the Go statements that go between the method's braces. No package, imports, or func declaration.
+- Emit ONLY the Go statements that go between the method's braces. No package, imports, or func declaration. No helper functions, types, or constants.
 - The signature is fixed and provided verbatim: the context parameter is c, the request parameter is request, and the named returns are data and err. Never declare or use req, resp, or Response.
 - Read inputs only as request.<Field>, using the request struct's verbatim field names.
-- Call the database exclusively through the store signatures provided — exactly the parameters each signature shows, same count and order. Never write SQL.
+- Call the database exclusively through the store signatures provided — exactly the parameters each signature shows, same count and order. Never write SQL anywhere (no raw strings, no string literals containing SQL).
 - Store methods return []*models.X or *models.X per their signatures; the row structs are provided verbatim — use their field names exactly, never invent fields.
 - String comparisons use double-quoted literals: flag == "Y", never 'Y'.
 - Every identifier must be one of: request.<Field>, a store call, data, err, or a local you declare. No hallucinated variables.
-- The method template already emits the START and END debug logs — never write logger START/END statements in the body.
-- Preserve the branch's business logic (flag checks, loops, decodes) as idiomatic Go.
+- The method template already emits the START and END debug logs — never write logger START/END statements, fmt.Print*, or any other logging in the body.
+- Check every error: each call that returns err must be followed by if err != nil { return nil, err } before its results are used. Never swallow or ignore an error.
+- Preserve the branch's control flow exactly as the view shows it — same loops, same branches, same order. Do not summarize, elide, merge, or reorder. A branch that looks dead still gets implemented. Every store call shown in the branch view MUST appear in the body, under the same condition.
 - On error return nil, err; on success return data, err.`
 
 // buildPrompt assembles the deterministic context: rewritten branch view,
-// DB contract, and the fixed signature + verbatim struct definitions.
+// DB contract, the fixed signature + verbatim struct definitions, and the
+// required-call contract (every store call the view shows is a must-call —
+// a dropped sub-flow is a gate rejection, never a silent gap).
 func buildPrompt(view budget.View, dbContract, contract, endpoint string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
 	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
+	if calls := requiredCalls(view.Source); len(calls) > 0 {
+		sb.WriteString("REQUIRED CALLS — every one must appear in the body, under the same condition the view shows: " +
+			strings.Join(calls, ", ") + "\n\n")
+	}
 	sb.WriteString("Fixed method signature and verbatim struct definitions (parameter and field names must match exactly):\n" + contract + "\n\n")
 	sb.WriteString("Legacy branch, with every SQL block already replaced by its store call:\n\n" + view.Source + "\n")
 	return sb.String()
+}
+
+// storeCallRe extracts the store calls the rewritten view requires.
+var storeCallRe = regexp.MustCompile(`s\.store\.([A-Za-z0-9_]+)\(`)
+
+// requiredCalls lists the unique store method names in the view, in order.
+func requiredCalls(view string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range storeCallRe.FindAllStringSubmatch(view, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, "s.store."+m[1])
+		}
+	}
+	return out
+}
+
+// requiredCallErrs is the orchestration-contract gate: a body that drops a
+// store call the view shows is rejected and the omission fed back.
+func requiredCallErrs(view, body string) []string {
+	var errs []string
+	for _, call := range requiredCalls(view) {
+		if !strings.Contains(body, call+"(") {
+			errs = append(errs, "orchestration contract: "+call+" appears in the branch view but is missing from the body — every REQUIRED CALL is mandatory under its view condition")
+		}
+	}
+	return errs
 }
 
 // branchSource slices the 1-based inclusive line range out of src.

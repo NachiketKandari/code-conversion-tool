@@ -72,6 +72,11 @@ func main() {
 			log.Error("convert failed", "error", err)
 			os.Exit(1)
 		}
+	case "batchpy":
+		if err := runBatchpy(ctx, rest[1:]); err != nil {
+			log.Error("batchpy failed", "error", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Printf("tuxgo version %s\n", version)
 	case "help", "-h", "--help":
@@ -174,7 +179,12 @@ Available Commands:
   plan         Generate the deterministic decomposition plan from the IR + the
                user's endpoint mapping (plan.json/plan.md in the ledger dir)
   convert      Execute the conversion plan into the target Go service (or staged
-               output when the target is absent), resumable via the ledger
+               output when the target is absent), resumable via the ledger; a
+               directory with several Tuxedo entries converts one worker per
+               service in parallel (mapping directory with source: entries)
+  batchpy      Convert Pro*C batch programs into Python service modules
+               (SQL constants + repository/DAL + service with process_daily_batch;
+               pychk syntax gate + SQL fidelity + retention report)
   version      Print version information
 
 `)
@@ -184,7 +194,7 @@ Available Commands:
 // arguments so flags may appear before or after the target path — the stdlib
 // flag package otherwise stops parsing at the first positional.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true}
+	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {

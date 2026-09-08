@@ -205,12 +205,24 @@ func TestMappingValidation(t *testing.T) {
 		{"bad route", func(m *Mapping) { m.Endpoints[0].Route = "mfnavhistory" }},
 		{"bad ident", func(m *Mapping) { m.Endpoints[0].Name = "nav-history" }},
 		{"bad pin ident", func(m *Mapping) { m.DBMethods["q1"] = MethodPin{Name: "get-date"} }},
+		{"source with dir", func(m *Mapping) { m.Source = "dir/SVC_DEMO_LIST.pc" }},
+		{"source bad ext", func(m *Mapping) { m.Source = "SVC_DEMO_LIST.c" }},
 	}
 	for _, tc := range cases {
 		m := navMapping()
 		tc.mut(m)
 		if err := m.Validate(); err == nil {
 			t.Errorf("%s: expected validation error", tc.name)
+		}
+	}
+
+	// source is optional and must accept bare .pc/.pcf names when present.
+	valid := []string{"", "SVC_DEMO_LIST.pc", "svc_demo_list.PCF"}
+	for _, src := range valid {
+		m := navMapping()
+		m.Source = src
+		if err := m.Validate(); err != nil {
+			t.Errorf("source %q: unexpected validation error: %v", src, err)
 		}
 	}
 }

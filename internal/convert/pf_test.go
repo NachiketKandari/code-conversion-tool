@@ -45,7 +45,7 @@ func pfFixture(t *testing.T, pcPath, service string, m *plan.Mapping) (Options, 
 	}
 	opts := Options{
 		Plan: p, Main: main, Source: string(src),
-		Client: llm.New(llm.Endpoint{ProfileName: "fake", Model: "fake", APIBase: fake.URL, Temperature: 0.1}),
+		Client: contractClient{llm.New(llm.Endpoint{ProfileName: "fake", Model: "fake", APIBase: fake.URL, Temperature: 0.1})},
 		Budget: budget.New(12000, 4000, 4), BaseDir: t.TempDir(),
 		Ledger: led, Validator: validate.New(validate.Options{}), MaxRetries: 2, Audit: rec,
 	}

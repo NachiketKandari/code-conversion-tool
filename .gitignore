@@ -13,6 +13,13 @@ bin/
 
 # Tool runtime artifacts (never commit: corpus may be proprietary, logs/captures may hold sensitive data — R6)
 tux/
+# batch→python reference corpus (proprietary-shaped, local only — PRD-2026-09-08)
+batchExamples/
+# batchpy generated modules (derived from the gitignored corpus)
+python_out/
+# real-service corpus: original .pc sources + their nav reference conversions
+tuxExamples/
+examples/nav/
 conversion_logs/
 /tuxgo
 .tuxgo.yaml

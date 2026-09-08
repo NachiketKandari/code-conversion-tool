@@ -89,6 +89,32 @@ convert:
 	}
 }
 
+func TestBatchpyInputKey(t *testing.T) {
+	yamlSrc := `
+batchpy:
+  input: tux/batch/
+  outDir: pygen_out
+`
+	path := filepath.Join(t.TempDir(), ".tuxgo.yaml")
+	if err := os.WriteFile(path, []byte(yamlSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Batchpy.Input != "tux/batch/" {
+		t.Errorf("batchpy.input = %q, want tux/batch/", cfg.Batchpy.Input)
+	}
+	if cfg.Batchpy.OutDir != "pygen_out" {
+		t.Errorf("batchpy.outDir = %q, want pygen_out", cfg.Batchpy.OutDir)
+	}
+	// Conventions absent from the yaml keep their defaults.
+	if cfg.Batchpy.Entrypoint != "process_daily_batch" || cfg.Batchpy.ChunkSize != 1000 {
+		t.Errorf("batchpy defaults must survive partial yaml: %+v", cfg.Batchpy)
+	}
+}
+
 func TestLoadOverlayAndUnknownKeys(t *testing.T) {
 	yamlSrc := `
 run:

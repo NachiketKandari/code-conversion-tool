@@ -18,6 +18,37 @@ import (
 
 const fakeBody = "\tlogger.Log(c).Debug(\"converted\")\n\treturn nil, err\n"
 
+// contractClient wraps the scripted fake so canned bodies satisfy the
+// required-call contract (BP hardening parity with batchpy): any store call
+// the prompt's branch view shows but the canned body omits is appended as a
+// checked no-op assignment — Tier A only parses, so the shape stays valid.
+type contractClient struct{ inner llm.Client }
+
+func (c contractClient) Chat(ctx context.Context, req llm.ChatRequest) (llm.Response, error) {
+	resp, err := c.inner.Chat(ctx, req)
+	if err != nil {
+		return resp, err
+	}
+	prompt := ""
+	for _, m := range req.Messages {
+		if m.Role == "user" {
+			prompt += "\n" + m.Content
+		}
+	}
+	extra := ""
+	for _, call := range requiredCalls(prompt) {
+		if !strings.Contains(resp.Content, call+"(") {
+			extra += "\n\tif _, cerr := " + call + "(c); cerr != nil {\n\t\treturn nil, cerr\n\t}"
+		}
+	}
+	resp.Content += extra
+	return resp, nil
+}
+
+func (c contractClient) Stream(ctx context.Context, req llm.ChatRequest, onDelta func(string) error) (llm.Response, error) {
+	return c.inner.Stream(ctx, req, onDelta)
+}
+
 func convertFixture(t *testing.T) (Options, *llm.FakeServer) {
 	t.Helper()
 	files, err := ir.ExtractDir("../../testdata/nav")
@@ -78,7 +109,7 @@ func convertFixture(t *testing.T) (Options, *llm.FakeServer) {
 	}
 	opts := Options{
 		Plan: p, Main: main, Source: string(src), FnFiles: fns,
-		Client: llm.New(llm.Endpoint{ProfileName: "fake", Model: "fake", APIBase: fake.URL, Temperature: 0.1}),
+		Client: contractClient{llm.New(llm.Endpoint{ProfileName: "fake", Model: "fake", APIBase: fake.URL, Temperature: 0.1})},
 		Budget: budget.New(12000, 4000, 4), BaseDir: base,
 		Ledger: led, Validator: validate.New(validate.Options{}), MaxRetries: 2, Audit: rec,
 	}

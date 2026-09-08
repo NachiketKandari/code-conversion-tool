@@ -118,5 +118,34 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("buffers.roles[%q]: unknown role %q (want input, output, send or recv)", name, role)
 		}
 	}
+
+	// batchpy conventions (PRD-2026-09-08 BP-7): enum fields are a fixed
+	// vocabulary; the wrapper spellings must be present or the generated
+	// module cannot compile.
+	b := c.Batchpy
+	for _, p := range []struct{ name, v string }{
+		{"batchpy.wrapperModule", b.WrapperModule},
+		{"batchpy.routerClass", b.RouterClass},
+		{"batchpy.readMode", b.ReadMode},
+		{"batchpy.writeMode", b.WriteMode},
+		{"batchpy.entrypoint", b.Entrypoint},
+	} {
+		if strings.TrimSpace(p.v) == "" {
+			return fmt.Errorf("%s must not be empty", p.name)
+		}
+	}
+	switch b.Shape {
+	case "auto", "repo":
+	default:
+		return fmt.Errorf("batchpy.shape %q: only \"auto\" or \"repo\"", b.Shape)
+	}
+	switch b.DMLLoop {
+	case "batch", "rowbyrow":
+	default:
+		return fmt.Errorf("batchpy.dmlLoop %q: only \"batch\" or \"rowbyrow\"", b.DMLLoop)
+	}
+	if b.ChunkSize < 1 {
+		return fmt.Errorf("batchpy.chunkSize must be >= 1, got %d", b.ChunkSize)
+	}
 	return nil
 }

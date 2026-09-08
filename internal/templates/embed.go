@@ -33,6 +33,22 @@ const (
 	HandlerInterfaceFile    ID = "handler_interface_file"
 	HandlerMethod           ID = "handler_method"
 	RouterSnippet           ID = "router_snippet"
+
+	// Python batch target (PRD-2026-09-08 BP-3): the batchpy emitter's
+	// section templates, distilled from the batchExamples reference
+	// conversions (pythonEqTux1/2 shapes).
+	PyBatchHeader       ID = "py_batch_header"
+	PyBatchConst        ID = "py_batch_const"
+	PyBatchDALFetch     ID = "py_batch_dal_fetch"
+	PyBatchDALDML       ID = "py_batch_dal_dml"
+	PyBatchPhase        ID = "py_batch_phase"
+	PyBatchEntrypoint   ID = "py_batch_entrypoint"
+	PyBatchServiceHead  ID = "py_batch_service_head"
+	PyBatchRepoFetchIt  ID = "py_batch_repo_fetch_iterator"
+	PyBatchRepoFetchOne ID = "py_batch_repo_fetch_single"
+	PyBatchRepoDML      ID = "py_batch_repo_dml"
+	PyBatchRepoRebuild  ID = "py_batch_repo_rebuild"
+	PyBatchServiceShell ID = "py_batch_service_shell"
 )
 
 // AllIDs lists every template in the embedded set.
@@ -53,6 +69,18 @@ var AllIDs = []ID{
 	HandlerInterfaceFile,
 	HandlerMethod,
 	RouterSnippet,
+	PyBatchHeader,
+	PyBatchConst,
+	PyBatchDALFetch,
+	PyBatchDALDML,
+	PyBatchPhase,
+	PyBatchEntrypoint,
+	PyBatchServiceHead,
+	PyBatchRepoFetchIt,
+	PyBatchRepoFetchOne,
+	PyBatchRepoDML,
+	PyBatchRepoRebuild,
+	PyBatchServiceShell,
 }
 
 func (id ID) path() string { return "templates/" + string(id) + ".tmpl" }
