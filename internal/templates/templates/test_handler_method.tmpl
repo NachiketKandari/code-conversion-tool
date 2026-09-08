@@ -1,0 +1,80 @@
+// run test | debug test
+func (suite *{{.SuiteName}}) Test{{.Name}}() {
+	testCases := []struct {
+		desc                  string
+{{- range .ReqFields}}
+		{{.Name}}             string
+{{- end}}
+		mockInput             []any
+		expectedError         string
+		expectedErrorHttpCode int
+	}{
+		{
+			desc: "{{.Name}}Error",
+{{- range .ReqFields}}
+			{{.Name}}: "{{.Value}}",
+{{- end}}
+			mockInput:             []any{nil, errors.New("error while fetching data")},
+			expectedError:         "error while fetching data",
+			expectedErrorHttpCode: http.StatusInternalServerError,
+		},
+		{
+			desc: "Failure",
+{{- range .ReqFields}}
+			{{.Name}}: "{{.Value}}",
+{{- end}}
+			mockInput:             []any{nil, nil},
+			expectedError:         "No Data Found",
+			expectedErrorHttpCode: http.StatusNoContent,
+		},
+		{
+			desc: "Success",
+{{- range .ReqFields}}
+			{{.Name}}: "{{.Value}}",
+{{- end}}
+			mockInput: {{.SuccessInput}},
+		},
+	}
+
+	for _, testCase := range testCases {
+		suite.T().Run(testCase.desc, func(t *testing.T) {
+			// Mocking and Setting Expected Result
+			request := {{.ReqInit}}
+
+			response, ctx := utils.CreateTestGinContext(http.MethodPost, request, nil, nil, nil)
+			if testCase.mockInput != nil {
+				suite.{{.CtrlMockVar}}.
+					EXPECT().
+					{{.Name}}(ctx, &request).
+					Return(testCase.mockInput...)
+			}
+
+			// Triggering Function
+			suite.{{.HandlerVar}}.{{.Name}}(ctx)
+			if response.Code == http.StatusNoContent {
+				assert.Empty(t, response.Body.String(), "Expected empty body for 204 No Content")
+				return
+			}
+
+			var httpResponse network.HttpResponse
+			err := json.Unmarshal(response.Body.Bytes(), &httpResponse)
+			if err != nil {
+				suite.T().Errorf("unable to unmarshal response: %v\nresponse body: %s", err, response.Body.String())
+				return
+			}
+
+			// Validations
+			if testCase.expectedError != "" {
+				assert.Equal(t, response.Code, testCase.expectedErrorHttpCode)
+				assert.Equal(t, httpResponse.Status, "failure")
+				assert.Contains(t, httpResponse.Error.Description, testCase.expectedError)
+			} else {
+				assert.Equal(t, response.Code, http.StatusOK)
+				assert.Equal(t, httpResponse.Status, "success")
+
+				actualResponse, _ := utils.TypeConverter[{{.RespType}}](httpResponse.Data)
+				assert.Equal(t, testCase.mockInput[0], *actualResponse)
+			}
+		})
+	}
+}

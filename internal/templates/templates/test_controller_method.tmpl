@@ -1,0 +1,44 @@
+func (suite *{{.SuiteName}}) Test{{.Name}}() {
+	testCases := []struct {
+		desc           string
+		mockInput      []any
+		expectedError  string
+		expectedOutput {{.ExpectType}}
+	}{
+		{
+			desc:          "StoreError",
+			mockInput:     []any{nil, errors.New("store error")},
+			expectedError: "store error",
+		},
+		{
+			desc:           "Success",
+			mockInput:      {{.MockReturn}},
+			expectedError:  "",
+			expectedOutput: {{.ExpectExpr}},
+		},
+	}
+
+	for _, testCase := range testCases {
+		suite.T().Run(testCase.desc, func(t *testing.T) {
+			// Mocking and Setting Expected Result
+			request := {{.ReqExpr}}
+
+			suite.{{.MockVar}}.
+				EXPECT().
+				{{.StoreCall}}(suite.ctx{{range .StoreArgs}}, {{.}}{{end}}).
+				Return(testCase.mockInput...)
+
+			// Triggering Function
+			data, err := suite.{{.CtrlVar}}.{{.Name}}(suite.ctx, &request)
+
+			// Validations
+			if testCase.expectedError != "" {
+				assert.Error(t, err)
+				assert.Nil(t, data)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, testCase.expectedOutput, data)
+		})
+	}
+}

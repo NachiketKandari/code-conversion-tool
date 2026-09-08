@@ -1,0 +1,41 @@
+package gen
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+
+	"github.com/Public/convert-tux-to-go/internal/telemetry"
+)
+
+// MockTarget names one interface to regenerate with mockgen.
+type MockTarget struct {
+	Source string // interface file path
+	Dest   string // mock output path
+	Name   string // interface name
+}
+
+// RunMocks regenerates the uber-go/mock doubles for targets when the
+// mockgen binary is available; otherwise it is a WARN + skip — never a
+// run failure (plan-conversion §4.7). Shared by `convert` and `gentest`
+// (PRD-2026-09-09 GT-D7); missing sources are skipped silently.
+func RunMocks(ctx context.Context, targets []MockTarget) {
+	log := telemetry.Log(ctx)
+	mockgen, err := exec.LookPath("mockgen")
+	if err != nil {
+		log.Warn("mockgen not found — mocks skipped (uber-go/mock requires docs/dependencies.md onboarding before wiring)")
+		return
+	}
+	for _, t := range targets {
+		if _, err := os.Stat(t.Source); err != nil {
+			continue
+		}
+		cmd := exec.Command(mockgen, "-source", t.Source, "-destination", t.Dest, "-package", filepath.Base(filepath.Dir(t.Dest)), t.Name)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			log.Warn("mockgen failed (best-effort)", "interface", t.Name, "output", string(out))
+		} else {
+			log.Info("mocks generated", "interface", t.Name, "path", t.Dest)
+		}
+	}
+}

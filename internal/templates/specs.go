@@ -235,3 +235,120 @@ type RouterData struct {
 	Service string // "nav"
 	Routes  []RouteSpec
 }
+
+// ---- Test templates (PRD-2026-09-09 GT-2, distilled from examples/nav) ----
+
+// TestHeaderData renders the mockgen + coverage comment header carried by
+// every generated test file (examples/nav/*_test.txt convention).
+type TestHeaderData struct {
+	MockGenCmd  string // full mockgen command line
+	CoverageCmd string // full go test + cover command line
+}
+
+// TestDBFileData renders a db layer test file: suite struct + runner +
+// SetupSuite + per-method test blocks (examples/nav/db/nav_test.txt shape).
+type TestDBFileData struct {
+	TestHeaderData
+	Package     string // db
+	LoggerPkg   string // <module>/pkg/logger
+	ModelsPkg   string // models import path
+	UtilsPkg    string // <module>/pkg/utils
+	SuiteName   string // NavStoreSuite
+	StoreVar    string // navStore
+	IfaceName   string // NavStore
+	CtorCall    string // NewNavStore(nil, suite.sqlDB) — pre-rendered
+	NeedsSQL    bool   // database/sql import (sql.Null* expected exprs)
+	NeedsModels bool   // models import (row-struct expected exprs)
+	Methods     []string
+}
+
+// TestDBMethodData renders one suite method: table-driven sqlmock cases
+// (SQLError / [Success-NoRows] / Success) over one store call. Braced
+// literals arrive pre-rendered (ExpectExpr/NoRowsExpr) so templates never
+// fight text/template's {{ parsing.
+type TestDBMethodData struct {
+	SuiteName  string   // NavStoreSuite
+	StoreVar   string   // navStore
+	Name       string   // GetNavDetails
+	Regex      string   // ExpectQuery regex over the FROM table list
+	Cols       []string // mock row columns (db tags)
+	Row        []string // Success row values (assumed fixture source)
+	NoRows     bool     // scalar GetContext: extra Success-NoRows case
+	NoRowsExpr string   // expectedOutput literal for the NoRows case
+	ExpectType string   // []*models.NavDetails / int64
+	ExpectExpr string   // Success expectedOutput literal
+	CallArgs   []string // rendered store-call args after ctx
+}
+
+// TestControllerFileData renders a controller test file — canonical shape
+// (the reference controller test file is empty): gomock store mock + suite.
+type TestControllerFileData struct {
+	TestHeaderData
+	Package   string // controller
+	DBPkg     string // db package import (MockNavStore lives there)
+	LoggerPkg string
+	ModelsPkg string
+	SuiteName string // NavControllerSuite
+	CtrlVar   string // navController (controller under test)
+	CtrlIface string // NavController
+	MockVar   string // storeMock
+	MockType  string // db.MockNavStore
+	MockCtor  string // db.NewMockNavStore(gomock.NewController(suite.T()))
+	CtorCall  string // NewNavController(suite.storeMock)
+	Methods   []string
+}
+
+// TestControllerMethodData renders one suite method: store-mock EXPECT in
+// body-call order + controller call + error/success assertions.
+type TestControllerMethodData struct {
+	SuiteName  string   // NavControllerSuite
+	CtrlVar    string   // navController
+	MockVar    string   // storeMock
+	Name       string   // NavList
+	StoreCall  string   // first store dependency (GetNavDetails)
+	StoreArgs  []string // EXPECT args after ctx (request field refs)
+	ReqExpr    string   // models.NavRequest{CompCode: "..."} — pre-rendered
+	MockReturn string   // []any{<store row literal>, nil} — pre-rendered
+	ExpectType string   // []*models.NavResponse
+	ExpectExpr string   // success expectedOutput literal — pre-rendered
+}
+
+// TestHandlerFileData renders a handler test file
+// (examples/nav/handler/nav_test.txt shape).
+type TestHandlerFileData struct {
+	TestHeaderData
+	Package       string // handler
+	ControllerPkg string // controller import (MockNavController)
+	LoggerPkg     string
+	ModelsPkg     string
+	NetworkPkg    string // <module>/pkg/network
+	UtilsPkg      string
+	SuiteName     string // NavHandlerSuite
+	CtrlMockVar   string // navController
+	CtrlMockType  string // controller.MockNavController
+	MockCtor      string // controller.NewMockNavController(gomock.NewController(suite.T()))
+	HandlerVar    string // navHandler
+	IfaceName     string // NavHandler
+	CtorCall      string // NewNavHandler(suite.navController)
+	Methods       []string
+}
+
+// ReqField is one request-struct field mirrored into the handler test's
+// case struct (GT-D2: the example's per-request case fields, derived).
+type ReqField struct {
+	Name  string // CompCode
+	Value string // assumed fixture value
+}
+
+// TestHandlerMethodData renders one suite method: gin-context table cases
+// (Error 500 / Failure 204 / Success 200) over the mocked controller.
+type TestHandlerMethodData struct {
+	SuiteName    string     // NavHandlerSuite
+	CtrlMockVar  string     // navController
+	HandlerVar   string     // navHandler
+	Name         string     // NavList
+	ReqFields    []ReqField // request fields driving the case struct
+	ReqInit      string     // models.NavRequest{CompCode: testCase.CompCode}
+	SuccessInput string     // []any{<response literal>, nil} — pre-rendered
+	RespType     string     // []*models.NavResponse
+}

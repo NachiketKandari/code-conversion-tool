@@ -49,6 +49,17 @@ const (
 	PyBatchRepoDML      ID = "py_batch_repo_dml"
 	PyBatchRepoRebuild  ID = "py_batch_repo_rebuild"
 	PyBatchServiceShell ID = "py_batch_service_shell"
+
+	// Post-conversion Go test target (PRD-2026-09-09 GT-2): the gentest
+	// layer templates, distilled from the examples/nav reference
+	// conversions (controller = canonical shape — the reference file is
+	// empty).
+	TestDBFile           ID = "test_db_file"
+	TestDBMethod         ID = "test_db_method"
+	TestControllerFile   ID = "test_controller_file"
+	TestControllerMethod ID = "test_controller_method"
+	TestHandlerFile      ID = "test_handler_file"
+	TestHandlerMethod    ID = "test_handler_method"
 )
 
 // AllIDs lists every template in the embedded set.
@@ -81,6 +92,12 @@ var AllIDs = []ID{
 	PyBatchRepoDML,
 	PyBatchRepoRebuild,
 	PyBatchServiceShell,
+	TestDBFile,
+	TestDBMethod,
+	TestControllerFile,
+	TestControllerMethod,
+	TestHandlerFile,
+	TestHandlerMethod,
 }
 
 func (id ID) path() string { return "templates/" + string(id) + ".tmpl" }

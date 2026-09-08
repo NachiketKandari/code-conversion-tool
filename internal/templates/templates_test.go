@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"go/parser"
+	"go/token"
 	"strings"
 	"testing"
 )
@@ -440,6 +442,158 @@ func TestRenderRouterSnippet(t *testing.T) {
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("router snippet missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+// ---- Test templates (PRD-2026-09-09 GT-2) ----
+
+const (
+	testLoggerPkg   = navModule + "/pkg/logger"
+	testModelsPkg   = navModule + "/pkg/services/nav/models"
+	testUtilsPkg    = navModule + "/pkg/utils"
+	testNetworkPkg  = navModule + "/pkg/network"
+	testDBPkg       = navModule + "/pkg/services/nav/db"
+	testCtrlPkg     = navModule + "/pkg/services/nav/controller"
+	testMockGenCmd  = "mockgen -source=pkg/services/nav/db/interface.go -destination=pkg/services/nav/db/mock_store.go -package=db"
+	testCoverageCmd = "go test pkg/services/nav/db/nav_test.go pkg/services/nav/db/nav.go pkg/services/nav/db/interface.go -v -coverprofile=coverage.txt -covermode count && go tool cover -html=coverage.txt"
+)
+
+func parseTestFile(t *testing.T, name, src string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	if _, err := parser.ParseFile(fset, name, src, parser.SkipObjectResolution); err != nil {
+		t.Fatalf("composed test file %s does not parse: %v\n---\n%s", name, err, src)
+	}
+}
+
+func TestRenderTestDBFile(t *testing.T) {
+	navDetailsMethod := render(t, TestDBMethod, TestDBMethodData{
+		SuiteName: "NavStoreSuite", StoreVar: "navStore", Name: "GetNavDetails",
+		Regex:      `^SELECT (.+) FROM DEMO_COMPANY, DEMO_SCHEME, DEMO_PRICE WHERE (.+)$`,
+		Cols:       []string{"COMP_CD", "SCH_CD", "NAV"},
+		Row:        []string{"852", "123", "50"},
+		ExpectType: "[]*models.NavDetails",
+		ExpectExpr: `[]*models.NavDetails{{CompCd: sql.NullString{String: "852", Valid: true}}}`,
+		CallArgs:   []string{`"852"`},
+	})
+	getCountMethod := render(t, TestDBMethod, TestDBMethodData{
+		SuiteName: "NavStoreSuite", StoreVar: "navStore", Name: "GetCount",
+		Regex:      `^SELECT (.+) FROM DEMO_ACCOUNT_MAP WHERE (.+)$`,
+		Cols:       []string{"count"},
+		Row:        []string{"0"},
+		NoRows:     true,
+		NoRowsExpr: "0",
+		ExpectType: "int64",
+		ExpectExpr: "0",
+		CallArgs:   []string{`"8500011155"`},
+	})
+	out := render(t, TestDBFile, TestDBFileData{
+		Package: "db", LoggerPkg: testLoggerPkg, ModelsPkg: testModelsPkg, UtilsPkg: testUtilsPkg,
+		SuiteName: "NavStoreSuite", StoreVar: "navStore", IfaceName: "NavStore",
+		CtorCall: "NewNavStore(nil, suite.sqlDB)", NeedsSQL: true, NeedsModels: true,
+		Methods: []string{navDetailsMethod, getCountMethod},
+	})
+	parseTestFile(t, "nav_test.go", out)
+
+	for _, want := range []string{
+		"type NavStoreSuite struct {",
+		"func TestNavStoreSuite(t *testing.T) {",
+		"logger.LoggerInit(\"\", -1)",
+		"utils.NewSqlxMockDB()",
+		"NewNavStore(nil, suite.sqlDB)",
+		"func (suite *NavStoreSuite) TestGetNavDetails() {",
+		`desc:          "SQLError",`,
+		`sqlmock.NewRows([]string{ "COMP_CD", "SCH_CD", "NAV", }).AddRow("852", "123", "50", ),`,
+		`ExpectQuery("^SELECT (.+) FROM DEMO_COMPANY, DEMO_SCHEME, DEMO_PRICE WHERE (.+)$")`,
+		`suite.navStore.GetNavDetails(suite.ctx, "852")`,
+		"func (suite *NavStoreSuite) TestGetCount() {",
+		"Success-NoRows",
+		`suite.navStore.GetCount(suite.ctx, "8500011155")`,
+		"assert.ErrorContains(t, err, testCase.expectedError)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("db test file missing %q\n---\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "\"database/sql\"") || !strings.Contains(out, testModelsPkg) {
+		t.Errorf("db test file needs sql/models imports\n---\n%s", out)
+	}
+}
+
+func TestRenderTestControllerFile(t *testing.T) {
+	navListMethod := render(t, TestControllerMethod, TestControllerMethodData{
+		SuiteName: "NavControllerSuite", CtrlVar: "navController", MockVar: "storeMock",
+		Name: "NavList", StoreCall: "GetNavDetails", StoreArgs: []string{"request.CompCode"},
+		ReqExpr:    "models.NavRequest{CompCode: \"FML_COMP_CD\"}",
+		MockReturn: `[]any{[]*models.NavDetails{{CompCd: sql.NullString{String: "FML_COMP_CD", Valid: true}}}, nil}`,
+		ExpectType: "[]*models.NavResponse",
+		ExpectExpr: `[]*models.NavResponse{{CompCode: "FML_COMP_CD"}}`,
+	})
+	out := render(t, TestControllerFile, TestControllerFileData{
+		Package: "controller", DBPkg: testDBPkg, LoggerPkg: testLoggerPkg, ModelsPkg: testModelsPkg,
+		SuiteName: "NavControllerSuite", CtrlVar: "navController", CtrlIface: "NavController",
+		MockVar: "storeMock", MockType: "db.MockNavStore",
+		MockCtor: "db.NewMockNavStore(gomock.NewController(suite.T()))",
+		CtorCall: "NewNavController(suite.storeMock)",
+		Methods:  []string{navListMethod},
+	})
+	parseTestFile(t, "nav_test.go", out)
+
+	for _, want := range []string{
+		"storeMock *db.MockNavStore",
+		"db.NewMockNavStore(gomock.NewController(suite.T()))",
+		"NewNavController(suite.storeMock)",
+		"func (suite *NavControllerSuite) TestNavList() {",
+		"request := models.NavRequest{CompCode: \"FML_COMP_CD\"}",
+		"GetNavDetails(suite.ctx, request.CompCode)",
+		"Return(testCase.mockInput...)",
+		"suite.navController.NavList(suite.ctx, &request)",
+		"assert.Nil(t, data)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("controller test file missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderTestHandlerFile(t *testing.T) {
+	navListMethod := render(t, TestHandlerMethod, TestHandlerMethodData{
+		SuiteName: "NavHandlerSuite", CtrlMockVar: "navController", HandlerVar: "navHandler",
+		Name:         "NavList",
+		ReqFields:    []ReqField{{Name: "CompCode", Value: "FML_COMP_CD"}},
+		ReqInit:      "models.NavRequest{CompCode: testCase.CompCode}",
+		SuccessInput: `[]any{[]*models.NavResponse{{CompCode: "FML_COMP_CD"}}, nil}`,
+		RespType:     "[]*models.NavResponse",
+	})
+	out := render(t, TestHandlerFile, TestHandlerFileData{
+		Package: "handler", ControllerPkg: testCtrlPkg, LoggerPkg: testLoggerPkg,
+		ModelsPkg: testModelsPkg, NetworkPkg: testNetworkPkg, UtilsPkg: testUtilsPkg,
+		SuiteName: "NavHandlerSuite", CtrlMockVar: "navController", CtrlMockType: "controller.MockNavController",
+		MockCtor:   "controller.NewMockNavController(gomock.NewController(suite.T()))",
+		HandlerVar: "navHandler", IfaceName: "NavHandler", CtorCall: "NewNavHandler(suite.navController)",
+		Methods: []string{navListMethod},
+	})
+	parseTestFile(t, "nav_test.go", out)
+
+	for _, want := range []string{
+		"gin.SetMode(gin.TestMode)",
+		"utils.RegisterValidations(v)",
+		"controller.NewMockNavController(gomock.NewController(suite.T()))",
+		"NewNavHandler(suite.navController)",
+		"func (suite *NavHandlerSuite) TestNavList() {",
+		"desc: \"NavListError\",",
+		"CompCode: \"FML_COMP_CD\",",
+		"expectedErrorHttpCode: http.StatusInternalServerError,",
+		"request := models.NavRequest{CompCode: testCase.CompCode}",
+		"utils.CreateTestGinContext(http.MethodPost, request, nil, nil, nil)",
+		"suite.navHandler.NavList(ctx)",
+		"var httpResponse network.HttpResponse",
+		"utils.TypeConverter[[]*models.NavResponse](httpResponse.Data)",
+		"desc: \"Failure\"",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("handler test file missing %q\n---\n%s", want, out)
 		}
 	}
 }

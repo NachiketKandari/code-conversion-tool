@@ -77,6 +77,11 @@ func main() {
 			log.Error("batchpy failed", "error", err)
 			os.Exit(1)
 		}
+	case "gentest":
+		if err := runGentest(ctx, rest[1:]); err != nil {
+			log.Error("gentest failed", "error", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Printf("tuxgo version %s\n", version)
 	case "help", "-h", "--help":
@@ -185,6 +190,9 @@ Available Commands:
   batchpy      Convert Pro*C batch programs into Python service modules
                (SQL constants + repository/DAL + service with process_daily_batch;
                pychk syntax gate + SQL fidelity + retention report)
+  gentest      Generate db/controller/handler Go tests for a converted service
+               tree (post-conversion: file | layer dir | service dir | services
+               root; -check-only reports the function test gap)
   version      Print version information
 
 `)
@@ -194,7 +202,7 @@ Available Commands:
 // arguments so flags may appear before or after the target path — the stdlib
 // flag package otherwise stops parsing at the first positional.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true}
+	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true, "layers": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {

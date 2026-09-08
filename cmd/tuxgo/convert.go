@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/convert"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
+	"github.com/Public/convert-tux-to-go/internal/gen"
 	"github.com/Public/convert-tux-to-go/internal/ledger"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/plan"
@@ -227,30 +227,22 @@ func printServiceSummary(service string, res *convert.Result, led *ledger.Ledger
 
 // runMocks regenerates the uber-go/mock doubles when the mockgen binary and
 // the target module are both available; otherwise it is a WARN + skip —
-// never a run failure (plan-conversion §4.7).
+// never a run failure (plan-conversion §4.7). The runner lives in
+// internal/gen (shared with `gentest`, PRD-2026-09-09 GT-D7); this wrapper
+// computes the plan's two interface targets.
 func runMocks(ctx context.Context, base string, p *plan.Plan) {
-	log := telemetry.Log(ctx)
-	mockgen, err := exec.LookPath("mockgen")
-	if err != nil {
-		log.Warn("mockgen not found — mocks skipped (uber-go/mock requires docs/dependencies.md onboarding before wiring)")
-		return
-	}
-	type ifc struct{ src, dst, name string }
-	targets := []ifc{
-		{filepath.Join(base, mockRel(p, "db", "interface.go")), filepath.Join(base, mockRel(p, "db", "mock_store.go")), serviceName(p) + "Store"},
-		{filepath.Join(base, mockRel(p, "controller", "interface.go")), filepath.Join(base, mockRel(p, "controller", "mock_controller.go")), serviceName(p) + "Controller"},
-	}
-	for _, t := range targets {
-		if _, err := os.Stat(t.src); err != nil {
-			continue
-		}
-		cmd := exec.Command(mockgen, "-source", t.src, "-destination", t.dst, "-package", filepath.Base(filepath.Dir(t.dst)), t.name)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			log.Warn("mockgen failed (best-effort)", "interface", t.name, "output", string(out))
-		} else {
-			log.Info("mocks generated", "interface", t.name, "path", t.dst)
-		}
-	}
+	gen.RunMocks(ctx, []gen.MockTarget{
+		{
+			Source: filepath.Join(base, mockRel(p, "db", "interface.go")),
+			Dest:   filepath.Join(base, mockRel(p, "db", "mock_store.go")),
+			Name:   serviceName(p) + "Store",
+		},
+		{
+			Source: filepath.Join(base, mockRel(p, "controller", "interface.go")),
+			Dest:   filepath.Join(base, mockRel(p, "controller", "mock_controller.go")),
+			Name:   serviceName(p) + "Controller",
+		},
+	})
 }
 
 func mockRel(p *plan.Plan, folder, file string) string {

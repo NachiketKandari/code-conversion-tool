@@ -1,0 +1,44 @@
+package {{.Package}}
+
+import (
+	"context"
+	"errors"
+	"{{.DBPkg}}"
+	"{{.LoggerPkg}}"
+	"{{.ModelsPkg}}"
+	"testing"
+
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/suite"
+)
+
+/*
+MockGen
+{{.MockGenCmd}}
+
+Coverage
+{{.CoverageCmd}}
+*/
+
+type {{.SuiteName}} struct {
+	suite.Suite
+	ctx          context.Context
+	{{.MockVar}} *{{.MockType}}
+	{{.CtrlVar}}  {{.CtrlIface}}
+}
+
+func Test{{.SuiteName}}(t *testing.T) {
+	suite.Run(t, new({{.SuiteName}}))
+}
+
+func (suite *{{.SuiteName}}) SetupSuite() {
+	logger.LoggerInit("", -1)
+
+	suite.ctx = context.TODO()
+	suite.{{.MockVar}} = {{.MockCtor}}
+	suite.{{.CtrlVar}} = {{.CtorCall}}
+}
+{{range .Methods}}
+{{.}}
+{{end}}
