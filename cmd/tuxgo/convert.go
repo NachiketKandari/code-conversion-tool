@@ -63,7 +63,7 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 	*mappingPath = mappingResolved
 
-	files, mains, err := extractPlanIR(target, cfg, *fragment)
+	files, mains, excluded, err := extractPlanIR(ctx, target, cfg, *fragment)
 	if err != nil {
 		return err
 	}
@@ -101,8 +101,12 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 
 	baseRoot, degrade := resolveBaseRoot(*baseDir, cfg)
-	if len(mains) > 1 {
-		return runConvertFanout(ctx, w, target, mains, files, *mappingPath, baseRoot, degrade)
+	// Fan-out covers multi-entry dirs and filtered runs alike: when
+	// convert.fileFilter dropped entries, the mapping path must be a
+	// directory (per-service yamls) so the excluded services' mappings can
+	// be exempted from the orphan check deliberately.
+	if len(mains) > 1 || len(excluded) > 0 {
+		return runConvertFanout(ctx, w, target, mains, files, excluded, *mappingPath, baseRoot, degrade)
 	}
 
 	mapping, err := plan.LoadMapping(*mappingPath)
@@ -152,6 +156,10 @@ func convertOneService(ctx context.Context, w *convertWiring, main *ir.File, fil
 	log := telemetry.Log(ctx)
 	start := time.Now()
 	log.Info("convert service started", "service", mapping.Service, "source", main.Path, "base", base)
+	for _, u := range main.Unbalanced {
+		log.Warn("unbalanced region in source — parse continues leniently, generated output may be incomplete",
+			"service", mapping.Service, "kind", u.Kind, "line", u.Line, "col", u.Col)
+	}
 	src, err := os.ReadFile(main.Path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("convert: read source: %w", err)

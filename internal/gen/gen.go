@@ -8,6 +8,7 @@ package gen
 import (
 	"fmt"
 	"go/format"
+	"path/filepath"
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
@@ -40,6 +41,13 @@ type Service struct {
 }
 
 // NewService derives the naming context from the plan and IR.
+//
+// Query indexing (severity F1): raw IDs belong to the main file alone.
+// Referenced fn files are namespaced `fn:<name>:<qID>` — exactly the plan's
+// pin namespace — and every other FnFile is scoped under its own base name,
+// so an unreferenced file's `q1` can never silently overwrite the main's
+// `q1`. Cross-file definitions sharing one ID with different SQL are a hard
+// error, never a walk-order-dependent overwrite.
 func NewService(o Options) (*Service, error) {
 	if o.Plan == nil || o.Main == nil {
 		return nil, fmt.Errorf("gen: plan and main IR are required")
@@ -50,39 +58,68 @@ func NewService(o Options) (*Service, error) {
 	s.If = exportName(s.Mapping.Service)
 	s.structLower = s.Mapping.Service
 	s.queries = make(map[string]*ir.Query, len(o.Main.Queries))
-	for _, q := range o.Main.Queries {
-		s.queries[q.ID] = q
-	}
-	for _, f := range o.FnFiles {
-		fnName := ""
-		for _, ext := range o.Main.ExternalFns {
-			if ext.DefinedIn == f.Path {
-				fnName = ext.Name
-				break
-			}
-		}
-		for _, q := range f.Queries {
-			id := q.ID
-			if fnName != "" {
-				id = fnName + ":" + q.ID
-			}
-			s.queries[id] = q
-		}
-	}
 	s.hostVars = make(map[string]ir.HostVar, len(o.Main.HostVars))
-	for _, hv := range o.Main.HostVars {
-		s.hostVars[hv.Name] = hv
+	origin := map[string]string{} // query id → defining file path
+	index := func(id string, q *ir.Query, path string) error {
+		if prev, dup := s.queries[id]; dup {
+			if prev.SQL == q.SQL {
+				return nil // same SQL under one id — benign re-index
+			}
+			return fmt.Errorf("gen: query %q defined by both %s and %s with different SQL — cross-file collision (severity F1 guard)", id, origin[id], path)
+		}
+		s.queries[id] = q
+		origin[id] = path
+		return nil
 	}
+	for _, q := range o.Main.Queries {
+		if err := index(q.ID, q, o.Main.Path); err != nil {
+			return nil, err
+		}
+	}
+
+	fnIRByPath := make(map[string]*ir.File, len(o.FnFiles))
+	handled := map[string]bool{o.Main.Path: true}
 	for _, f := range o.FnFiles {
+		fnIRByPath[f.Path] = f
+	}
+	for _, ext := range o.Main.ExternalFns {
+		if strings.HasPrefix(ext.Name, "chk_") {
+			continue // dropped construct at plan time (§4.8.4.1)
+		}
+		f := fnIRByPath[ext.DefinedIn]
+		if f == nil {
+			continue // unresolved fn — plan already blocks its endpoints
+		}
+		handled[f.Path] = true
+		for _, q := range f.Queries {
+			if err := index(ext.Name+":"+q.ID, q, f.Path); err != nil {
+				return nil, err
+			}
+		}
 		for _, hv := range f.HostVars {
 			s.hostVars[hv.Name] = hv
 		}
 	}
+	for _, f := range o.FnFiles {
+		if handled[f.Path] {
+			continue
+		}
+		// Unreferenced file — scoped, inert, still collision-guarded.
+		base := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
+		for _, q := range f.Queries {
+			if err := index(base+":"+q.ID, q, f.Path); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, hv := range o.Main.HostVars {
+		s.hostVars[hv.Name] = hv
+	}
 	return s, nil
 }
 
-// Query resolves a namespaced query ID (main-file IDs as-is, fn queries as
-// "<fn>:<id>").
+// Query resolves a namespaced query ID: main-file IDs as-is, referenced fn
+// queries as "<fn>:<id>", other files' queries as "<file base>:<id>".
 func (s *Service) Query(id string) *ir.Query { return s.queries[id] }
 
 // Pin returns the user's method pin for a query ID, if any.
@@ -325,15 +362,28 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 			row := s.RowName(u.QueryIDs[0], u.Name)
 			d.RowType, d.VarName = "models."+row, lowerFirst(row)
 		}
-	case ir.QueryMerge:
-		// MERGE renders through the DML contract (db_method_merge):
-		// ExecContext + RowsAffected, error-only return.
+	case ir.QueryInsert, ir.QueryUpdate, ir.QueryDelete, ir.QueryMerge:
+		// DML contract (severity F2): INSERT/UPDATE/DELETE render through
+		// the tx-variant templates (explicit `tx *sqlx.Tx` per decision 27 —
+		// in-branch DML is transactional; standalone DML never forms a unit
+		// under the current mapping model), MERGE through db_method_merge.
+		// All four are error-only: ExecContext + RowsAffected (the delete
+		// variant logs and returns without a RowsAffected check).
 		errOnly = true
+		d.TxParam = q.Type != ir.QueryMerge
+		d.SuccessMsg = u.Name + " executed successfully"
 	default:
 		return "", "", false, fmt.Errorf("gen: query %s type %s not supported by the deterministic db generator yet", q.ID, q.Type)
 	}
 
+	// Template resolution honors the IR's per-type choice (q.TemplateID is
+	// passed through the plan as u.TemplateID); when the plan's ID is absent
+	// or disagrees with the query type, the type's canonical template wins —
+	// never a cross-type fallback.
 	tmpl := templates.ID(u.TemplateID)
+	if want := templates.ID(q.Type.TemplateID()); want != "" && tmpl != want {
+		tmpl = want
+	}
 	if tmpl == "" {
 		tmpl = templates.DBMethodSelectMulti
 	}
@@ -342,6 +392,9 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 		return "", "", false, err
 	}
 	sig := u.Name + "(c context.Context"
+	if d.TxParam {
+		sig += ", tx *sqlx.Tx"
+	}
 	for _, p := range params {
 		sig += ", " + p.Name + " " + p.Type
 	}

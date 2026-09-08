@@ -200,9 +200,9 @@ func writeDirIR(ctx context.Context, cfg *config.Config, files []*ir.File) error
 				unresolved++
 			}
 		}
-		fmt.Printf("%s: entry=%s conditions=%d queries=%d unique=%d external_fns=%d unresolved=%d → %s\n",
+		fmt.Printf("%s: entry=%s conditions=%d queries=%d unique=%d external_fns=%d unresolved=%d unbalanced=%d → %s\n",
 			filepath.Base(file.Path), orDash(file.Entry), len(file.Conditions),
-			len(file.Queries), len(file.UniqueQueries()), len(file.ExternalFns), unresolved, path)
+			len(file.Queries), len(file.UniqueQueries()), len(file.ExternalFns), unresolved, len(file.Unbalanced), path)
 	}
 	log.Info("extraction complete", "files", len(files), "state_dir", stateDir)
 	return nil
@@ -231,12 +231,17 @@ func logFileIR(ctx context.Context, file *ir.File) {
 			log.Warn("external fn unresolved — generation blocks pending its defining file", "file", file.Path, "fn", ext.Name)
 		}
 	}
+	for _, u := range file.Unbalanced {
+		log.Warn("unbalanced region — the parse continues leniently past it, so downstream facts may be truncated",
+			"file", file.Path, "kind", u.Kind, "line", u.Line, "col", u.Col)
+	}
 	log.Info("file extracted",
 		"file", file.Path,
 		"entry", orDash(file.Entry),
 		"conditions", len(file.Conditions),
 		"queries", len(file.Queries),
 		"host_vars", len(file.HostVars),
+		"unbalanced", len(file.Unbalanced),
 	)
 }
 

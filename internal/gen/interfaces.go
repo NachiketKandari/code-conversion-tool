@@ -28,7 +28,7 @@ func sortedUnits(p *plan.Plan) []plan.Unit {
 // set is derived per method kind), and every db unit's method body.
 func (s *Service) DBMethodsFile(p *plan.Plan) (string, error) {
 	var bodies []string
-	need := struct{ sql, errors, fmt, time bool }{}
+	need := struct{ sql, errors, fmt, time, sqlx bool }{}
 	for _, u := range sortedUnits(p) {
 		if u.Kind != plan.KindDBMethod {
 			continue
@@ -53,6 +53,13 @@ func (s *Service) DBMethodsFile(p *plan.Plan) (string, error) {
 			need.sql, need.errors = true, true
 		case ir.QuerySelectMulti:
 			need.fmt = true
+		case ir.QueryInsert, ir.QueryUpdate:
+			// tx-variant bodies reference tx *sqlx.Tx and sql.ErrNoRows.
+			need.sqlx, need.sql = true, true
+		case ir.QueryDelete:
+			// The delete variant logs and returns — no RowsAffected check,
+			// so only the tx type shows up (severity F2 import contract).
+			need.sqlx = true
 		case ir.QueryMerge:
 			need.sql = true
 		}
@@ -73,12 +80,15 @@ func (s *Service) DBMethodsFile(p *plan.Plan) (string, error) {
 	if need.fmt {
 		writeImport("fmt")
 	}
+	if need.sqlx {
+		writeImport("github.com/jmoiron/sqlx")
+	}
 	writeImport(s.Module + "/pkg/logger")
 	writeImport(s.ModelsPkg)
 	if need.time {
 		writeImport("time")
 	}
-	if need.fmt || need.errors || need.sql {
+	if need.fmt || need.errors || need.sql || need.sqlx {
 		sb.WriteString("\n")
 	}
 	writeImport("go.uber.org/zap")

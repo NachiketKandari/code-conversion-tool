@@ -220,6 +220,18 @@ type File struct {
 	Queries         []*Query     `json:"queries"`
 	HostVars        []HostVar    `json:"host_vars"`
 	ExternalFns     []ExternalFn `json:"external_fns,omitempty"`
+	Unbalanced      []Unbalanced `json:"unbalanced,omitempty"`
+}
+
+// Unbalanced marks a construct the scanner could not close (PF-1.4,
+// severity F3): an unterminated block comment, an EXEC SQL block with no
+// terminating semicolon, or an unbalanced brace. The parse continues
+// leniently past such regions, so these facts must ride along on the IR —
+// loud in every summary, never a silent truncation.
+type Unbalanced struct {
+	Kind string `json:"kind"` // block_comment | exec_sql | braces
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
 }
 
 // UniqueQueries returns the queries that survive duplicate collapsing

@@ -72,7 +72,11 @@ func (s *Service) tpcallStub(u plan.Unit) string {
 	}
 	reason := "the target Go service has no outbound-call convention yet (R8); wire by hand or upgrade with a tpcalls mapping pin (PF-4.7)"
 	if tp.Ambiguous {
-		reason = "send/recv buffer variables could not be correlated at the call site (PF-4.3) — the contract is recorded as ambiguous"
+		if tp.SendBuffer == "" || tp.RecvBuffer == "" {
+			reason = "send/recv buffer variables could not be correlated at the call site (PF-4.3) — the contract is recorded as ambiguous"
+		} else {
+			reason = "buffers were identified but the call's block contains no FML ops — the send/recv contract is empty; wire by hand"
+		}
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "// tuxgo:TODO tp:%s — %s:%s\n", tp.Service, filepath.Base(u.SourceFile), u.SourceLines)
