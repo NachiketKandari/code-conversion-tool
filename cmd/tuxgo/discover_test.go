@@ -38,9 +38,11 @@ func discoverDraft(t *testing.T) string {
 	return renderDraft(f, candidates, false, nil)
 }
 
-// TestDiscoverDraftRoundTrip pins the scan-then-tag contract: the untagged
-// draft fails mapping validation (the tag instruction), and after tagging
-// names/routes the same bytes load through the strict loader unchanged.
+// TestDiscoverDraftRoundTrip pins the scan-then-tag contract: a draft
+// without suggestions carries name placeholders and the strict loader
+// rejects it (the human decision stays mandatory when no names were
+// proposed), while a tagged draft loads unchanged — module defaults to the
+// service name, so only names/routes are user decisions.
 func TestDiscoverDraftRoundTrip(t *testing.T) {
 	draft := discoverDraft(t)
 	if !strings.Contains(draft, `name: ""`) || !strings.Contains(draft, `route: ""`) {
@@ -48,6 +50,9 @@ func TestDiscoverDraftRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(draft, "service: \n") {
 		t.Error("service must be prefilled from the entry name")
+	}
+	if !strings.Contains(draft, "# module:") {
+		t.Errorf("module hint comment missing (defaults to the service name):\n%s", draft)
 	}
 
 	// Untagged: the strict loader rejects the empty identifiers.
@@ -59,11 +64,10 @@ func TestDiscoverDraftRoundTrip(t *testing.T) {
 		t.Error("untagged draft must fail LoadMapping")
 	}
 
-	// Tagged: same draft with the placeholders filled and module uncommented
-	// — exactly the flow the draft header instructs — loads clean. Names are
+	// Tagged: the same draft with names/routes filled — exactly the review
+	// the draft asks for — loads clean with zero other edits. Names are
 	// unique per endpoint, as the validation requires.
 	tagged := draft
-	tagged = strings.Replace(tagged, "# module: your-app/", "module: your-app/", 1)
 	names := []string{"NavHistory", "SipFreedem", "SipInsurance", "NavList", "Extra"}
 	for _, n := range names {
 		tagged = strings.Replace(tagged, `name: ""`, `name: `+n, 1)
@@ -79,6 +83,9 @@ func TestDiscoverDraftRoundTrip(t *testing.T) {
 	}
 	if m.Service != "svc_demo_list" || len(m.Endpoints) == 0 {
 		t.Errorf("loaded mapping = %+v", m)
+	}
+	if m.Module != "svc_demo_list" {
+		t.Errorf("module = %q, want the service default", m.Module)
 	}
 	for _, e := range m.Endpoints {
 		if e.Name == "" || !strings.HasPrefix(e.Route, "/") {
@@ -251,8 +258,7 @@ func TestDiscoverAINaming(t *testing.T) {
 	cfg := filepath.Join(dir, ".tuxgo.yaml")
 	conf := "run:\n  profile: fake\n  llm: true\nmodels:\n" +
 		"  - name: fake\n    provider: openai-compatible\n    model: fake-model\n" +
-		"    apiBase: " + server.URL + "\n    apiKey: test\n" +
-		"discover:\n  mode: ai\n"
+		"    apiBase: " + server.URL + "\n    apiKey: test\n"
 	if err := os.WriteFile(cfg, []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -296,26 +302,24 @@ func TestDiscoverAINaming(t *testing.T) {
 	if strings.Contains(draft, "GetDateDetails") || strings.Contains(draft, "DateInfo") {
 		t.Errorf("a pin for an unknown query id leaked into the draft:\n%s", draft)
 	}
-	// And the tagged draft still loads through the strict loader.
-	tagged := strings.ReplaceAll(draft, "ai-suggested", "tagged")
-	tagged = strings.Replace(tagged, "# module: your-app/", "module: your-app/", 1)
-	taggedPath := filepath.Join(dir, "tagged.yaml")
-	if err := os.WriteFile(taggedPath, []byte(tagged), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	m, err := plan.LoadMapping(taggedPath)
+	// And the AI-prefilled draft loads through the strict loader as-is —
+	// module defaults to the service name, so no manual edits are needed.
+	m, err := plan.LoadMapping(filepath.Join(out, "single.mapping.yaml"))
 	if err != nil {
-		t.Fatalf("AI-prefilled draft must load after (optional) edits: %v", err)
+		t.Fatalf("AI-prefilled draft must load with zero edits: %v", err)
 	}
 	if m.Endpoints[0].Name != "GetNavHistory" {
 		t.Errorf("endpoint name = %q", m.Endpoints[0].Name)
 	}
+	if m.Module != m.Service {
+		t.Errorf("module = %q, want the service default %q", m.Module, m.Service)
+	}
 }
 
-// TestDiscoverDeterministicNames pins the deterministic mode: drafts come
-// pre-filled with Go-legal names/routes derived from the strongest semantic
-// token source (cursor name → response fields → condition index), and the
-// draft loads through the strict loader once module/readDBs are filled —
+// TestDiscoverDeterministicNames pins the deterministic fallback: drafts
+// come pre-filled with Go-legal names/routes derived from the strongest
+// semantic token source (cursor name → response fields → condition index),
+// and the draft loads through the strict loader with ZERO manual edits —
 // names never have to be typed unless the user wants different ones.
 func TestDiscoverDeterministicNames(t *testing.T) {
 	f, err := ir.ExtractFileOpts(navFixture, ir.Options{})
@@ -343,10 +347,10 @@ func TestDiscoverDeterministicNames(t *testing.T) {
 	if strings.Contains(draft, `name: ""`) {
 		t.Errorf("deterministic mode must not leave empty names:\n%s", draft)
 	}
-	// Names must be unique, exported Go identifiers (loader-legal).
-	loaded := strings.Replace(draft, "# module: your-app/", "module: your-app/", 1)
+	// Names must be unique, exported Go identifiers (loader-legal), and the
+	// draft loads with zero edits.
 	path := filepath.Join(t.TempDir(), "det.yaml")
-	if err := os.WriteFile(path, []byte(loaded), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(draft), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m, err := plan.LoadMapping(path)

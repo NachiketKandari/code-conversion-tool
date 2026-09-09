@@ -2,21 +2,9 @@
 #
 # Copy to the working-directory root (next to the tuxgo binary and the tux/
 # corpus) and edit. All paths are relative to this file. API keys are
-# environment-variable NAMES only — never literals (R6); the Phase 1 loader
-# resolves them at runtime. Absent sections fall back to the defaults shown
-# here.
-#
-# Working-directory layout this config assumes (v0.6.3):
-#
-#   <workdir>/
-#     tuxgo                  # built binary (go build -o tuxgo ./cmd/tuxgo)
-#     .tuxgo.yaml            # this config
-#     tux/                   # the .pc corpus to convert (default input)
-#     conversion_logs/       # everything the tool writes (logs, audit, later
-#                            #  ledger + IR state) — gitignored
-#
-# Analyzer scoring weights are deliberately NOT configured here: per-fn
-# tuning lives in the generated CSV (tuxgo analyze -weights <csv>).
+# environment-variable NAMES only — never literals (R6); a literal apiKey
+# is allowed in THIS gitignored file as the local-dev fallback.
+# Absent sections fall back to the defaults shown here.
 
 run:
   profile: isec-vllm          # which models[] entry generation uses (R1)
@@ -24,17 +12,16 @@ run:
   maxContextTokens: 16000     # the model's context window — hard ceiling (R2)
   maxPromptTokens: 12000      # assembled-prompt budget: 12k in … (§4.3)
   maxOutputTokens: 4000       # … 4k out
-  charsPerToken: 4            # token-estimator ratio (chars/4 heuristic, §4.3) —
+  charsPerToken: 4            # token-estimator ratio (chars/4 heuristic) —
                               # tune per model without a code change
-  llm: true                   # false = deterministic-only run: models/db/interfaces/
-                              # handler/router generate; pending controller bodies are
-                              # marked skipped for a later LLM-enabled resume
-                              # (CLI -no-llm overrides for one run)
+  llm: true                   # THE one AI knob: false (or -no-llm on any command)
+                              # = deterministic-only run — controllers/bodies skip
+                              # or degrade, everything deterministic still generates
 
 models:                      # OpenAI-compatible profiles, same client seam (R1)
   - name: isec-vllm          # production generation endpoint (default)
     provider: openai-compatible
-    model: /opt/vllm/models/qwen3-VL-30B-A3B-Instruct-AWQ   # the exact served id (pr-review parity)
+    model: /opt/vllm/models/qwen3-VL-30B-A3B-Instruct-AWQ   # the exact served id
     apiBase: http://10.213.190.86:8002/v1
     apiKeyEnv: ISEC_API_KEY
     requestOptions:
@@ -45,96 +32,78 @@ models:                      # OpenAI-compatible profiles, same client seam (R1)
       retries: 3
   - name: local-dev-openrouter # local development profile, same schema
     provider: openai-compatible
-    model: <openrouter-model-id>   # e.g. qwen/qwen3-vl-30b-a3b-instruct (closest to the isec model)
+    model: <openrouter-model-id>   # e.g. qwen/qwen3-vl-30b-a3b-instruct
     apiBase: https://openrouter.ai/api/v1
     apiKeyEnv: OPENROUTER_API_KEY
-    # apiKey: <literal>           # local-only alternative to apiKeyEnv: keep it in THIS
-    #                             # gitignored file at the workdir root, never commit it (R6).
-    #                             # Resolution order: env var first, literal fallback.
-    requestOptions:
-      temperature: 0.1
-      maxTokens: 4000
-      stream: true
+    # apiKey: <literal>        # local-only alternative to apiKeyEnv: keep it in THIS
+    #                          # gitignored file, never commit it (R6). Resolution:
+    #                          # env var first, literal fallback.
 
-retrieval:                   # MVP: disabled — deterministic context only (OQ1)
-  enabled: false             # V2 = pure-Go BM25, V3 = vector/embeddings —
-  # maxContextTokens: 12000  #   both plug in behind the Retriever seam
+retrieval:
+  enabled: false              # MVP: disabled — deterministic context only (OQ1)
 
 elision:
-  mode: safe                 # bodies → "// … elided" placeholders (G3)
+  mode: safe                  # bodies → "// … elided" placeholders (G3)
 
 concurrency:
-  workers: 1                 # opt-in parallel DB-unit generation; correctness never depends on it
+  workers: 1                  # opt-in parallel fan-out; correctness never depends on it
 
 db:
-  withGorm: false            # false (default): the plain sqlx-only store — NewXStore(db *sqlx.DB).
-                             # true: the nav-example variant where the store also carries the legacy
-                             # *gorm.DB handle — NewXStore(oracle *gorm.DB, db *sqlx.DB)
+  withGorm: false             # false (default): plain sqlx-only store — NewXStore(db *sqlx.DB).
+                              # true: the nav-example variant — NewXStore(oracle *gorm.DB, db *sqlx.DB)
 
 buffers:                     # FML buffer-role registry (PF-4.1): variable names → roles.
   roles:                     # Matching is case-insensitive on the whole name or its last
     Ibuffer: input           # `_`-segment (ptr_fml_Ibuffer → Ibuffer → input). Unknown
     Obuffer: output          # names surface as a visible unknown-role fact, never a guess.
-    Sbuffer: send            # Register renamed/other buffer kinds (VIEW, CARRAY, future
-    Rbuffer: recv            # conventions) here instead of in code.
+    Sbuffer: send            # Register renamed/other buffer kinds (VIEW, CARRAY) here
+    Rbuffer: recv            # instead of in code.
 
-convert:                     # defaults for plan/convert so repeat runs need no CLI arguments
+convert:                     # defaults for convert so repeat runs need no CLI arguments
   input: ""                  # .pc/.pcf file or directory converted when the CLI passes no
                              # positional target (e.g. tux/SVC_DEMO_LIST.pc)
-  mapping: ""                # endpoint-mapping YAML used when -mapping is absent
-                             # (e.g. nav.mapping.yaml); explicit CLI flags override both
+  mapping: ""                # endpoint-mapping YAML (or mapping directory) used when -mapping
+                             # is absent; when both are empty, convert looks in mappings/
+                             # and drafts one if nothing is there — review, then re-run
   fileFilter: ""             # directory targets only: convert only the entries whose file
                              # name contains this substring, case-insensitively — e.g. "mf_"
                              # picks up SVC_MF_*.pc (your services) and skips the rest.
                              # Empty (default) = every entry. Helper/fn libs never need to
-                             # match (they stay in the resolution pool); a dir-mode mapping
-                             # for an excluded entry is skipped with a warning, not an error
-  flowDraft: true            # feed the deterministic flow-tree draft (PRD 2026-09-10)
-                             # into the controller prompt for the LLM to enhance — the
-                             # REQUIRED-CALLS gate is unchanged; false for prompt A/B runs
-
-discover:                    # endpoint scan-then-tag (`tuxgo discover`, PRD 2026-09-10)
-  mode: auto                 # draft naming: ai (one LLM call per candidate, advisory
-                             # defaults) | deterministic (cursor/FML-derived names, zero
-                             # model calls) | auto (AI when configured and reachable,
-                             # deterministic fallback per candidate). -mode overrides.
+                             # match (they stay in the resolution pool)
+  flowDraft: true            # feed the deterministic flow-tree draft into the controller
+                             # prompt for the LLM to enhance; false for prompt A/B runs
 
 validate:                    # gofmt → go build → go vet → go test loop (G6)
   maxRetries: 3              # bounded retries with trimmed errors fed back
-  compile: auto              # Tier-B compile/run checks (plan-conversion §2):
-                             #   auto   — run when paths.mainGo resolves, degrade
-                             #            to syntax-only (WARN) when absent
-                             #   always — require the target (error if missing)
-                             #   never  — skip Tier B even when it could run
+  compile: auto              # Tier-B compile/run checks: auto (follows paths.mainGo),
+                             # always (require the target), never (skip Tier B)
   run: false                 # smoke `go run .` after a green Tier B
 
 batchpy:                     # batch→Python conventions (PRD-2026-09-08 BP-7)
   input: ""                  # .pc/.pcf file or directory converted when the CLI passes no
                              # positional target (mirrors convert.input for the Go path)
-  fileFilter: ""             # directory targets only: convert only the batches whose file
-                             # name contains this substring, case-insensitively (e.g. "bat_mf_").
-                             # Empty (default) = every batch in the directory
-  wrapperModule: core.db_router  # the generated import of the db-router wrapper
-  routerClass: DatabaseRouter    # the wrapper class + DbMode modes below
-  readMode: DbMode.READ          # connection mode for SELECTs
-  writeMode: DbMode.WRITE        # connection mode for DML
-  loggerPrefix: "app."           # logger name = prefix + <service_name>
-  entrypoint: process_daily_batch  # the unified runner method the service exposes
-  shape: auto                    # auto = rubric by complexity | repo = always repository
-  dmlLoop: batch                 # batch = fetchall + chunked executemany | rowbyrow = per-row execute
-  chunkSize: 1000                # executemany chunk size (batch mode)
-  outDir: python_out             # default output directory for generated modules
+  fileFilter: ""             # directory targets only: substring match on file names, e.g. "bat_mf_"
+  wrapperModule: core.db_router   # the generated import of the db-router wrapper
+  routerClass: DatabaseRouter     # the wrapper class + DbMode modes below
+  readMode: DbMode.READ           # connection mode for SELECTs
+  writeMode: DbMode.WRITE         # connection mode for DML
+  loggerPrefix: "app."            # logger name = prefix + <service_name>
+  entrypoint: process_daily_batch # the unified runner method the service exposes
+  shape: auto                # auto = rubric by complexity | repo = always repository
+  dmlLoop: batch             # batch = fetchall + chunked executemany | rowbyrow = per-row execute
+  chunkSize: 1000            # executemany chunk size (batch mode)
+  outDir: python_out         # default output directory for generated modules
 
 paths:
-  tux: tux/                    # the .pc corpus to convert (OQ19 default: "convert this .pc" locates it here)
   target: ../existing-go-service # existing service: models/db/controller/handler — generated code plugs in (R8)
-  mainGo: ""                   # a file inside the target Go module (e.g. <target>/main.go):
-                               # the Tier-B anchor — validation walks up to its go.mod.
-                               # Empty = the target service is absent on this machine;
-                               # conversion then stages output under paths.staged and
-                               # validates syntax-only (the two-laptop constraint)
-  logs: conversion_logs/logs   # unified slog JSONL stream (Q6)
-  audit: conversion_logs/audit  # per-run audit trail (§4.7)
-  ledger: conversion_logs/ledger # unit status + source→target conversion map (§4.6, Phase 5)
-  state: conversion_logs/state   # IR cache, re-indexed on mtime (Phase 2)
-  staged: conversion_logs/_staged # generated-code staging when paths.mainGo is empty
+  mainGo: ""                 # a file inside the target Go module (e.g. <target>/main.go):
+                             # the Tier-B anchor — validation walks up to its go.mod.
+                             # Empty = target absent on this machine; conversion stages
+                             # under paths.staged and validates syntax-only
+  ledger: conversion_logs/ledger   # unit status + source→target conversion map (§4.6)
+  state: conversion_logs/state     # IR cache, re-indexed on mtime (Phase 2)
+  staged: conversion_logs/_staged  # generated-code staging when paths.mainGo is empty
+
+# Logs and audit are NOT configurable — `conversion_logs/logs/` and
+# `conversion_logs/audit/` are fixed conventions (move logs with the global
+# `-log-dir` flag). Everything the tool writes lands under `conversion_logs/`.

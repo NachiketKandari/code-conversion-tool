@@ -142,9 +142,6 @@ concurrency:
 validate:
   maxRetries: 5
 paths:
-  tux: corpus/
-  logs: logs/
-  audit: audit/
   ledger: ledger/
   state: state/
 `

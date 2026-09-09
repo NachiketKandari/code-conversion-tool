@@ -97,9 +97,7 @@ func (c *Config) Validate() error {
 	}
 
 	for _, p := range []struct{ name, v string }{
-		{"paths.tux", c.Paths.Tux},
-		{"paths.logs", c.Paths.Logs},
-		{"paths.audit", c.Paths.Audit},
+		{"paths.ledger", c.Paths.Ledger},
 		{"paths.state", c.Paths.State},
 		{"paths.staged", c.Paths.Staged},
 	} {
@@ -146,13 +144,6 @@ func (c *Config) Validate() error {
 	}
 	if b.ChunkSize < 1 {
 		return fmt.Errorf("batchpy.chunkSize must be >= 1, got %d", b.ChunkSize)
-	}
-	// discover.mode (PRD-2026-09-10 endpoint discovery): a typo must fail
-	// at load, never fall back silently.
-	switch c.Discover.Mode {
-	case "", "auto", "ai", "deterministic":
-	default:
-		return fmt.Errorf("discover.mode %q: only \"auto\", \"ai\" or \"deterministic\"", c.Discover.Mode)
 	}
 	return nil
 }

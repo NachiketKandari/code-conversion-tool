@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -101,5 +102,49 @@ func TestWriteConcurrentArtifacts(t *testing.T) {
 		if want := fmt.Sprintf("{\"service\":%d}", i); string(data) != want {
 			t.Errorf("artifact %d = %q, want %q", i, data, want)
 		}
+	}
+}
+
+// TestWriteExchange pins the shared LLM-trace artifact: the default name is
+// <kind>-<name>-attempt<attempt>.json (sanitized), File overrides it, and
+// the payload carries the full prompt + raw response + gate errors.
+func TestWriteExchange(t *testing.T) {
+	dir := t.TempDir()
+	rec, err := New(dir, "run-exchange")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := rec.WriteExchange(Exchange{
+		Unit: "u01", Kind: "controller", Name: "NavHistory", Attempt: 1,
+		Template: "controller_method", Prompt: "PROMPT", Response: "RESPONSE",
+		Errors: []string{"parse: unexpected }"}, Outcome: "failed",
+	})
+	if err != nil {
+		t.Fatalf("WriteExchange: %v", err)
+	}
+	if filepath.Base(path) != "controller-NavHistory-attempt1.json" {
+		t.Errorf("default artifact name = %q", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e Exchange
+	if err := json.Unmarshal(data, &e); err != nil {
+		t.Fatalf("payload is not an Exchange: %v", err)
+	}
+	if e.Prompt != "PROMPT" || e.Response != "RESPONSE" || e.Outcome != "failed" || len(e.Errors) != 1 {
+		t.Errorf("exchange = %+v", e)
+	}
+
+	// File override (convert's pinned unit-<id>-attempt<n> convention) and
+	// path-unsafe names are sanitized.
+	path, err = rec.WriteExchange(Exchange{Name: "svc/x", Kind: "batchpy", File: "unit-u09-attempt0.json"})
+	if err != nil || filepath.Base(path) != "unit-u09-attempt0.json" {
+		t.Errorf("File override = %q, %v", path, err)
+	}
+	path, err = rec.WriteExchange(Exchange{Name: "a/b c", Kind: "discover"})
+	if err != nil || strings.Contains(filepath.Base(path), "/") {
+		t.Errorf("unsanitized name: %q, %v", path, err)
 	}
 }

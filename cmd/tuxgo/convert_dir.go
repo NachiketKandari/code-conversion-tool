@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/Public/convert-tux-to-go/internal/convert"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
@@ -64,24 +63,17 @@ func runConvertFanout(ctx context.Context, w *convertWiring, target string, main
 	log.Info("convert dir fan-out", "target", target, "services", len(mains),
 		"workers", workers, "mapping_dir", mappingPath)
 	results := make([]serviceOutcome, len(mains))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, workers)
-	for i, main := range mains {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int, main *ir.File, mapping *plan.Mapping) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			// Per-service output isolation: its own subtree keeps the
-			// staged-collision guard, ledger, and Tier B scope natural.
-			// The inner DB-render pool stays at 1 — the outer pool already
-			// bounds the run's goroutines (nested pools would multiply).
-			base := filepath.Join(baseRoot, mapping.Service)
-			res, led, err := convertOneService(ctx, w, main, files, mapping, base, 1)
-			results[i] = serviceOutcome{service: mapping.Service, base: base, res: res, led: led, err: err}
-		}(i, main, mappings[i])
-	}
-	wg.Wait()
+	runIndexed(len(mains), workers, func(i int) {
+		main := mains[i]
+		mapping := mappings[i]
+		// Per-service output isolation: its own subtree keeps the
+		// staged-collision guard, ledger, and Tier B scope natural.
+		// The inner DB-render pool stays at 1 — the outer pool already
+		// bounds the run's goroutines (nested pools would multiply).
+		base := filepath.Join(baseRoot, mapping.Service)
+		res, led, err := convertOneService(ctx, w, main, files, mapping, base, 1)
+		results[i] = serviceOutcome{service: mapping.Service, base: base, res: res, led: led, err: err}
+	})
 
 	ok, failed := 0, 0
 	var firstErr error

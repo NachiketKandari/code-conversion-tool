@@ -64,7 +64,10 @@ type Mapping struct {
 	DBMethods  map[string]MethodPin `yaml:"dbMethods"`
 }
 
-// LoadMapping reads and validates a mapping YAML file.
+// LoadMapping reads and validates a mapping YAML file. An absent module
+// defaults to the service name — discover drafts load without a second edit
+// (the generated import prefix then equals the service name; set module: in
+// the yaml when generating into an existing repo).
 func LoadMapping(path string) (*Mapping, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -79,12 +82,16 @@ func LoadMapping(path string) (*Mapping, error) {
 	if err := m.Validate(); err != nil {
 		return nil, fmt.Errorf("plan: %s: %w", path, err)
 	}
+	if m.Module == "" {
+		m.Module = m.Service
+	}
 	return &m, nil
 }
 
 // Validate enforces the mapping invariants: service identity present, at
 // least one endpoint, unique Go method names and condition indices, valid
-// identifiers, routes under the group.
+// identifiers, routes under the group. Module is optional (defaults to the
+// service at load); when set it must be a plausible import path.
 func (m *Mapping) Validate() error {
 	if m.Source != "" {
 		if err := validEntryName(m.Source); err != nil {
@@ -97,10 +104,7 @@ func (m *Mapping) Validate() error {
 	if !token.IsIdentifier(m.Service) {
 		return fmt.Errorf("service %q is not a valid Go identifier", m.Service)
 	}
-	if m.Module == "" {
-		return fmt.Errorf("module must not be empty (import path of the service, e.g. mutual-fund-be/pkg/services/nav)")
-	}
-	if !strings.HasPrefix(m.Module, strings.SplitN(m.Module, "/", 2)[0]) {
+	if m.Module != "" && !strings.HasPrefix(m.Module, strings.SplitN(m.Module, "/", 2)[0]) {
 		return fmt.Errorf("module %q is malformed", m.Module)
 	}
 	if len(m.Endpoints) == 0 {

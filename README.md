@@ -139,7 +139,9 @@ Generates the target code unit by unit. Models, DB methods, interfaces, handler 
 go run ./cmd/tuxgo convert testdata/nav -mapping configs/nav.mapping.example.yaml
 ```
 
-**Multi-service directories fan out one worker per service.** When the target directory holds several Tuxedo entry files (`SVC_*` functions), `convert` partitions it into services and converts each end-to-end on its own goroutine, bounded by `concurrency.workers`. Each service writes into its own output subtree (`baseRoot/<service>`) with its own ledger, so runs stay isolated and resumable; the staged-collision guard and Tier B scope per service. `-mapping` then points at a **mapping directory** — one yaml per service declaring `source: <entry .pc file>`; an entry without a mapping, or a mapping naming no entry, is a hard error (a mapping naming an entry excluded by `convert.fileFilter` is a deliberate skip — WARN, not an error). `convert.fileFilter` scopes the run to your entries: `fileFilter: "mf_"` converts only `SVC_MF_*.pc` — with mappings present for the excluded services, they are skipped with a warning. Results print in extraction order after all workers land (first per-service error = exit error); workers=1 output is byte-identical to sequential single-service runs. Single-entry directories and single files keep the plain behavior above (`-mapping <file>`).
+**No mapping? Draft, then stop.** With no `-mapping`, no `convert.mapping`, and no `mappings/` drafts, convert runs the endpoint-discovery scan (see the `discover` section below): editable mapping drafts land in `mappings/` — AI-named when the model is reachable, deterministic names otherwise — and the run exits **before generating anything**, so reviewing them and re-running the same command is free (no tree cleanup, no half-converted state). On the re-run the mapping resolves from the `mappings/` convention (a directory of per-service drafts, or a single-entry pick by `source:`/file-name match). Explicit `-mapping` still wins and stays strict.
+
+**Multi-service directories fan out one worker per service.** When the target directory holds several Tuxedo entry files (`SVC_*` functions), `convert` partitions it into services and converts each end-to-end on its own goroutine, bounded by `concurrency.workers`. Each service writes into its own output subtree (`baseRoot/<service>`) with its own ledger, so runs stay isolated and resumable; the staged-collision guard and Tier B scope per service. `-mapping` then points at a **mapping directory** — one yaml per service declaring `source: <entry .pc file>`; an entry without a mapping, or a mapping naming no entry, is a hard error (a mapping naming an entry excluded by `convert.fileFilter` is a deliberate skip — WARN, not an error). When `-mapping` is absent, the `mappings/` drafts are used — entries still missing a draft get one written and skip this run (draft, then re-run). `convert.fileFilter` scopes the run to your entries: `fileFilter: "mf_"` converts only `SVC_MF_*.pc` — with mappings present for the excluded services, they are skipped with a warning. Results print in extraction order after all workers land (first per-service error = exit error); workers=1 output is byte-identical to sequential single-service runs. Single-entry directories and single files keep the plain behavior above (`-mapping <file>`).
 
 **Convert Python and Go in parallel** — two invocations, one per target, share nothing: `batchpy` writes Python modules under `-out` (default `python_out/`), `convert` writes Go under the target/staged tree, and each run gets its own log/audit IDs, so they compose trivially:
 
@@ -151,9 +153,11 @@ wait
 
 With `concurrency.workers > 1` both fan out internally (LLM endpoint rate limits are the ceiling). Never run two `convert` processes against the same output base at once — ledgers and staged trees are per-run, not cross-process-locked.
 
-Repeat runs need no CLI arguments: set `convert.input` (the `.pc`/`.pcf` target) and `convert.mapping` in `.tuxgo.yaml` and run `tuxgo convert` bare — explicit CLI arguments always override the yaml. `tuxgo plan` resolves its inputs the same way.
+Repeat runs need no CLI arguments: set `convert.input` (the `.pc`/`.pcf` target) and `convert.mapping` in `.tuxgo.yaml` and run `tuxgo convert` bare — explicit CLI arguments always override the yaml, and an untouched workspace falls back to the `mappings/` drafts. `tuxgo plan` resolves its inputs the same way.
 
-**Deterministic-only mode:** `run.llm: false` in the yaml (or `-no-llm` for one run) generates every deterministic artifact — models, DB methods, interfaces, handler glue, router — with zero LLM calls; pending controller bodies are marked **skipped** (never failed) in the ledger, and a later LLM-enabled run resumes exactly those.
+**Deterministic-only mode:** `run.llm: false` in the yaml (or `-no-llm` for one run) is the single AI knob shared by every command. For convert it generates every deterministic artifact — models, DB methods, interfaces, handler glue, router — with zero LLM calls; pending controller bodies are marked **skipped** (never failed) in the ledger, and a later LLM-enabled run resumes exactly those. The same knob drives batchpy's service bodies, gentest's gap-fill, and discovery naming (deterministic names).
+
+**Every LLM exchange is archived.** Each AI call — convert controller bodies, batchpy service bodies, gentest gap-fill, discovery naming — writes its full trace (unit, template, assembled prompt, raw response, gate errors, outcome) into the run's audit folder (`conversion_logs/audit/<run-id>/`): `unit-<id>-attempt<n>.json` for convert, `<seam>-<name>-attempt<n>.json` for the rest. "What did the model see and say" is answerable for every seam after the fact.
 
 **External interactions render as placeholders:** the target Go service has no outbound-call convention today, so each `tpcall` unit compiles as a stub in `controller/tpcall_placeholders.go` — a `// tuxgo:TODO tp:<SVC> — <source>:<lines>` marker carrying the full `send:`/`recv:` FML contract and reason, a body returning zero values + `errPlaceholder`. The build never breaks (R8: no invented scaffolding), and grepping `tuxgo:TODO` enumerates every external gap. The ledger records them under a `placeholder` status (alongside `blocked`/`skipped`) and the run summary reports them as a first-class count. When an outbound convention exists, a `tpcalls:` mapping pin upgrades a placeholder to a real call — no pipeline change (documented in `docs/plan-conversion.md`).
 
@@ -231,22 +235,20 @@ Fault tolerance is contractual: malformed input (unbalanced braces, parenless he
 
 ## `discover` — endpoint scan-then-tag *(PRD 2026-09-10)*
 
-`tuxgo discover <file|dir>` removes the mapping-yaml authoring burden while keeping the human decision (§4.2.8 — the tool never invents endpoints): it finds the **API candidates** — conditions/blocks enclosing `Fget32` request reads **and** non-error `Fadd32` response writes (error emissions — `FML_ERR_MSG` into the input buffer, "fadd err = returning error" — never count; an if enclosing only error emission is a guard, not an API), including qualifying nested ifs (keyed `c<n>.<k>`; subsets of their parent are marked redundant), and emits an **editable mapping draft** per entry: endpoints with pre-filled `name`/`route`, per-candidate read/write/query census comments, non-candidates kept commented-out for control, `service` prefilled, and a `dbMethods:` block (AI-proposed pins, or the commented skeleton listing the entry's query IDs). Fill `module:`/`readDBs:` and feed the draft straight back: `-mapping <file>` (or a directory of drafts in dir mode). Standalone fragments (no `void SVC_*` entry) discover the same way.
+`convert` is the day-to-day entry: **with no mapping anywhere it runs this engine itself** — scans the target, writes the drafts, and stops (draft, then re-run). `tuxgo discover <file|dir>` stays for drafting ahead of time (same scan, same drafts, plus `-out`/`-stdout`).
 
-**Naming modes** (`-mode`, or `discover.mode` in `.tuxgo.yaml` — `ai` | `deterministic` | `auto`, default `auto`):
+The scan keeps the human decision (§4.2.8 — the tool never invents endpoints): it finds the **API candidates** — conditions/blocks enclosing `Fget32` request reads **and** non-error `Fadd32` response writes (error emissions — `FML_ERR_MSG` into the input buffer, "fadd err = returning error" — never count; an if enclosing only error emission is a guard, not an API), including qualifying nested ifs (keyed `c<n>.<k>`; subsets of their parent are marked redundant), and emits an **editable mapping draft** per entry: endpoints with pre-filled `name`/`route` (always editable), per-candidate read/write/query census comments, non-candidates kept commented-out for control, `service` prefilled, and a `dbMethods:` block (AI-proposed pins, or the commented skeleton listing the entry's query IDs). `module:` defaults to the service name at load, so a draft is **loadable as-is** — reviewing the suggested names is the only step, and even that is optional.
 
-- `ai` — one LLM call per candidate endpoint (branch source + its query SQL; params stay deterministic from the IR binds) proposes the endpoint name/route and db-method/row pins, marked `# ai-suggested — edit freely`. Unknown query ids and non-identifier proposals are dropped; per-candidate failures fall back to deterministic names.
-- `deterministic` — names derived from the strongest semantic token source (cursor name `cur_mf_nav_hist` → `GetMfNavHist`; else the first response field → `GetMfNavDate`; else `Endpoint<n>`), marked `# deterministic — edit freely`. Zero model calls.
-- `auto` — AI when configured and reachable, deterministic otherwise.
+**Naming** — one knob, shared with every command (`run.llm` in the yaml, `-no-llm` per run): when the model is reachable, one LLM call per candidate (branch source + its query SQL; params stay deterministic from the IR binds) proposes the endpoint name/route and db-method/row pins, marked `# ai-suggested — edit freely`; otherwise names derive from the strongest semantic token source (cursor name `cur_mf_nav_hist` → `GetMfNavHist`; else the first response field → `GetMfNavDate`; else `Endpoint<n>`), marked `# deterministic — edit freely`. Unknown query ids and non-identifier proposals are dropped; per-candidate failures fall back to deterministic names. Every naming attempt (prompt + raw response) lands in the run's audit folder (`discover-c<k>-attempt<n>.json`).
 
-Drafts land as `mappings/<entry>.mapping.yaml` (`-out` overrides, `-stdout` prints); a re-run never overwrites an existing draft — the fresh one lands alongside as `<entry> (1).mapping.yaml`. The bare command falls back to `convert.input`; `-no-llm`-equivalent is `-mode deterministic`. Every command's wall-clock duration is recorded in the run log (`run completed … duration_ms`).
+Drafts land as `mappings/<entry>.mapping.yaml` (`-out` overrides, `-stdout` prints); a re-run never overwrites an existing draft — the fresh one lands alongside as `<entry> (1).mapping.yaml`. The bare command falls back to `convert.input`. Every command's wall-clock duration is recorded in the run log (`run completed … duration_ms`).
 
 ```sh
-go run ./cmd/tuxgo discover tuxExamples/mainTux.pc            # auto mode → mappings/mainTux.mapping.yaml
-go run ./cmd/tuxgo discover tuxExamples/mainTux.pc -mode ai   # force the model (one call per candidate)
-go run ./cmd/tuxgo discover tuxExamples/mainTux.pc -mode deterministic -stdout
-go run ./cmd/tuxgo discover <dir>                             # one draft per entry in mappings/
-go run ./cmd/tuxgo discover                                   # uses convert.input from .tuxgo.yaml
+go run ./cmd/tuxgo convert tuxExamples/mainTux.pc          # no mapping → drafts + stop; re-run to convert
+go run ./cmd/tuxgo discover tuxExamples/mainTux.pc         # same drafts, ahead of time
+go run ./cmd/tuxgo discover tuxExamples/mainTux.pc -stdout # print instead of writing
+go run ./cmd/tuxgo discover <dir>                          # one draft per entry in mappings/
+go run ./cmd/tuxgo discover                                # uses convert.input from .tuxgo.yaml
 ```
 
 ## Working-directory layout
@@ -257,8 +259,9 @@ The agreed runtime layout (where the built binary lives):
 <workdir>/
 ├── tuxgo                       # the built binary (go build -o tuxgo ./cmd/tuxgo)
 ├── .tuxgo.yaml                 # run config — copy of configs/.tuxgo.example.yaml, edited
-├── mappings/                   # discover's draft mappings (gitignored) — edit name/route,
-                                 # then pass the file/dir to plan/convert via -mapping
+├── mappings/                   # mapping drafts (gitignored) — written by convert's
+                                 # no-mapping fallback / discover; review names, then
+                                 # just re-run convert (the convention resolves automatically)
 ├── tux/                        # the .pc corpus to convert (default input dir)
 └── conversion_logs/            # everything the tool writes (gitignored)
     ├── logs/
@@ -268,6 +271,9 @@ The agreed runtime layout (where the built binary lives):
         └── <DDMMYYYY_HHMMSS>/
             ├── triage_report.csv           # archived copy of every analyze run
             ├── unit-<id>-attempt<N>.json   # per-unit LLM attempt records (convert)
+            ├── controller-<fn>-attempt<N>.json  # gentest gap-fill exchanges
+            ├── batchpy-<module>-attempt<N>.json # batchpy service-body exchanges
+            ├── discover-c<k>-attempt<N>.json    # AI naming exchanges
             ├── <service>_ledger.json       # ledger snapshot (convert)
             ├── sql-fidelity.json           # per-method SQL fidelity results (PF-6)
             └── sql-free.json               # SQL-free artifact leak results (PF-6)
@@ -280,7 +286,7 @@ The agreed runtime layout (where the built binary lives):
 The loader ships (Phase 1) — copy `configs/.tuxgo.example.yaml` to the working-directory root and edit; every command loads it when present and falls back to defaults otherwise. Unknown keys are errors. Schema:
 
 - `run` — profile selection, pinned temperature, token budgets (16k window,
-  12k prompt / 4k output) and the `charsPerToken` estimator ratio (default 4, tunable per model without a code change); `run.llm: false` (or `tuxgo convert -no-llm`) is the deterministic-only mode
+  12k prompt / 4k output) and the `charsPerToken` estimator ratio (default 4, tunable per model without a code change); `run.llm: false` (or `-no-llm` on any command) is THE AI knob — deterministic-only everywhere: convert skips controller bodies (resumable later), batchpy/gentest degrade to placeholders/notes, discovery naming goes deterministic
 - `models[]` — OpenAI-compatible profiles on one client seam: `isec-vllm`
   (production) + `local-dev-openrouter` (local dev); keys resolve via `apiKeyEnv` (env first) with a gitignored-file `apiKey` literal as the local-dev fallback — never commit a literal key (R6). `tuxgo` routes to the profile named by `run.profile` (or an explicit override) and logs the routing decision per run
 - `retrieval` — disabled in MVP (V2 BM25 / V3 vector plug in behind the seam)
@@ -289,11 +295,11 @@ The loader ships (Phase 1) — copy `configs/.tuxgo.example.yaml` to the working
 - `db` — generated DB-layer shape: `withGorm: false` (default) is the plain
   sqlx-only store (`NewXStore(db *sqlx.DB)`); `true` renders the nav-example variant where the store also carries the legacy `*gorm.DB` handle
 - `convert` — default `input` (`.pc`/`.pcf` target) and `mapping` (endpoint
-  YAML) so `tuxgo plan`/`tuxgo convert` run bare; CLI flags override. `fileFilter` scopes **directory** targets to entries whose file name contains the substring (case-insensitive) — e.g. `fileFilter: "mf_"` converts only your `SVC_MF_*.pc` services; empty (default) = every entry. Helper/fn libs never need to match (the full directory set stays in the fn-resolution pool), an explicitly passed file bypasses the filter, and a dir-mode mapping for a filter-excluded entry is skipped with a warning instead of the orphan error. `flowDraft` (default on) feeds the PRD-2026-09-10 deterministic flow-tree draft into the controller prompt for the LLM to enhance — set it `false` for prompt A/B runs; the REQUIRED-CALLS gate is unchanged either way
+  YAML or mapping directory) so `tuxgo plan`/`tuxgo convert` run bare; CLI flags override, and with both empty convert falls back to the `mappings/` drafts — none present, it drafts and stops (see `discover`). `fileFilter` scopes **directory** targets to entries whose file name contains the substring (case-insensitive) — e.g. `fileFilter: "mf_"` converts only your `SVC_MF_*.pc` services; empty (default) = every entry. Helper/fn libs never need to match (the full directory set stays in the fn-resolution pool), an explicitly passed file bypasses the filter, and a dir-mode mapping for a filter-excluded entry is skipped with a warning instead of the orphan error. `flowDraft` (default on) feeds the PRD-2026-09-10 deterministic flow-tree draft into the controller prompt for the LLM to enhance — set it `false` for prompt A/B runs; the REQUIRED-CALLS gate is unchanged either way
 - `batchpy` — batch→Python conventions (PRD 2026-09-08): `wrapperModule`
   (`core.db_router`), `routerClass`, `readMode`/`writeMode`, `loggerPrefix` (`app.`), `entrypoint` (`process_daily_batch`), `shape` (`auto|repo`), `dmlLoop` (`batch|rowbyrow`), `chunkSize`, `outDir` (`python_out`), `fileFilter` (same name-substring scoping as `convert.fileFilter`, for batch files); CLI flags override
-- `paths` — `tux/`, the target Go service, and the `conversion_logs/`
-  sub-roots (logs, audit, ledger, state); `paths.mainGo` anchors Tier B (and enables in-place generation) when the target service exists; `paths.staged` receives generated code when it does not
+- `paths` — `target` (the existing Go service), `mainGo` (the Tier-B anchor,
+  enables in-place generation when set), `ledger`/`state`/`staged` (the `conversion_logs/` sub-roots); `paths.staged` receives generated code when the target service does not exist. Logs and audit are **not** configurable — `conversion_logs/logs/` and `conversion_logs/audit/` are fixed conventions (move logs with the global `-log-dir` flag)
 
 ## Development
 
@@ -360,6 +366,7 @@ configs/              example yamls: the run config schema and a commented
 - [x] batchpy — Tux batch → Python (`tuxgo batchpy`: shape rubric, repository/DAL layering, orchestration-contract LLM seam, pychk + fidelity gates, retention report, per-file worker fan-out)
 - [ ] Phase 6 — test generation (PRD-2026-09-09: `tuxgo gentest` — scan, templates, per-function generation engine, in-worker LLM seam + gates, target matrix/staging, byte-pinned goldens: all landed with a full in-repo E2E; runtime-log FixtureSource pending on user logs) + Phase 7/8 — eval harness, Q&A CLI
 - [x] convert dir fan-out — one worker per service file end-to-end (`tuxgo convert <dir>` with several Tuxedo entry files: per-service ledgers, per-service output subtrees `base/<service>`, mapping directory with `source:` entries; `concurrency.workers` bounds the pool, workers=1 byte-identical, race-tested)
+- [x] UX consolidation (2026-09-10) — convert is the front door: no mapping → discovery drafts land in `mappings/` and the run stops (re-run converts, `mappings/` convention resolves automatically); drafts load with zero edits (`module` defaults to the service, dead `routeGroup` dropped); the AI knob is one (`run.llm` + `-no-llm` everywhere — `discover.mode`/`-mode`/`-ai` deleted); every LLM seam archives its full prompt+response trace (`audit.Exchange`); shared `resolveLLMClient`/`runIndexed` seams
 - [ ] TBD (parked) — dir-mode fan-out for `analyze`/`extract`; take up when corpus scale demands it
 
 See `prd/PRD-2026-09-06.md` (§6 work plan) and `docs/architecture.md` — both local to the working repo, not shipped.

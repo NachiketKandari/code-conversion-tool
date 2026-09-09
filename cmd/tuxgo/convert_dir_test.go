@@ -239,12 +239,10 @@ validate:
   compile: never
 paths:
   mainGo: ""
-  logs: %s
-  audit: %s
   ledger: %s
   state: %s
   staged: %s
-`, workers, filepath.Join(t.TempDir(), "logs"), filepath.Join(t.TempDir(), "audit"), ledger, filepath.Join(t.TempDir(), "state"), staged))
+`, workers, ledger, filepath.Join(t.TempDir(), "state"), staged))
 	return path
 }
 

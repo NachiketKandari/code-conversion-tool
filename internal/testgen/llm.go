@@ -14,7 +14,9 @@ import (
 	"go/token"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/llm"
+	"github.com/Public/convert-tux-to-go/internal/telemetry"
 )
 
 // fillCtrlMethod fills one field-mapping controller's suite method through
@@ -28,6 +30,23 @@ func fillCtrlMethod(ctx context.Context, u *unit, opts Options) (string, int, er
 	calls := 0
 	var notes []string
 	var lastErr error
+	record := func(attempt int, prompt, response string, err error) {
+		if opts.Audit == nil {
+			return
+		}
+		var errs []string
+		outcome := "ok"
+		if err != nil {
+			errs = []string{err.Error()}
+			outcome = "failed"
+		}
+		if _, werr := opts.Audit.WriteExchange(audit.Exchange{
+			Unit: u.sc.name, Kind: "gentest", Name: u.fn.Name, Attempt: attempt,
+			Prompt: prompt, Response: response, Errors: errs, Outcome: outcome,
+		}); werr != nil {
+			telemetry.Log(ctx).Warn("audit exchange failed", "service", u.sc.name, "error", werr)
+		}
+	}
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		prompt := ctrlUserPrompt(u, notes)
 		if opts.Budget.MaxPromptTokens > 0 {
@@ -42,11 +61,13 @@ func fillCtrlMethod(ctx context.Context, u *unit, opts Options) (string, int, er
 			},
 		})
 		if err != nil {
+			record(attempt, prompt, "", err)
 			return "", calls, fmt.Errorf("llm chat: %w", err)
 		}
 		calls++
 		if opts.Budget.MaxOutputTokens > 0 {
 			if err := opts.Budget.CheckOutput(resp.Content); err != nil {
+				record(attempt, prompt, resp.Content, err)
 				notes = append(notes, "output over budget: "+err.Error())
 				lastErr = err
 				continue
@@ -54,10 +75,12 @@ func fillCtrlMethod(ctx context.Context, u *unit, opts Options) (string, int, er
 		}
 		block := extractGoBlock(resp.Content)
 		if err := gateCtrlBlock(block, u); err != nil {
+			record(attempt, prompt, resp.Content, err)
 			notes = append(notes, fmt.Sprintf("attempt %d rejected: %v", attempt+1, err))
 			lastErr = err
 			continue
 		}
+		record(attempt, prompt, resp.Content, nil)
 		return block, calls, nil
 	}
 	return "", calls, lastErr

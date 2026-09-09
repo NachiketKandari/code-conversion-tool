@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
@@ -21,15 +22,15 @@ import (
 // endpoint-discovery scan-then-tag mode: the flow IR finds the API
 // candidates (conditions/blocks enclosing Fget32 reads and non-error
 // Fadd32 writes) and emits a mapping draft the user tags with names/routes.
-// The tool never invents endpoints (§4.2.8) — the draft carries `name: ""`
-// placeholders the user fills before `plan`/`convert` consume the file.
+// The tool never invents endpoints (§4.2.8). Naming: one AI call per
+// candidate when the client is available (run.llm, no -no-llm), deterministic
+// names otherwise — every proposal is an advisory draft default.
 func runDiscover(ctx context.Context, args []string) error {
 	log := telemetry.Log(ctx)
 	fs := flag.NewFlagSet("discover", flag.ContinueOnError)
 	outDir := fs.String("out", "", "Directory for the draft yamls (default: mappings/)")
 	stdout := fs.Bool("stdout", false, "Print the draft(s) instead of writing files")
-	namingMode := fs.String("mode", "", "Naming mode: ai | deterministic | auto (default from discover.mode, else auto — AI when configured and reachable, deterministic fallback)")
-	aiFlag := fs.Bool("ai", false, "Shorthand for -mode ai")
+	noLLM := fs.Bool("no-llm", false, "Deterministic-only run: skip AI naming (overrides run.llm)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
 
 	flagArgs, positional := reorderArgs(args)
@@ -54,44 +55,45 @@ func runDiscover(ctx context.Context, args []string) error {
 		return fmt.Errorf("must provide a .pc/.pcf file or directory, or set convert.input in .tuxgo.yaml")
 	}
 
-	mode := *namingMode
-	if *aiFlag {
-		mode = "ai"
-	}
-	if mode == "" {
-		mode = cfg.Discover.Mode
-	}
-	if mode == "" {
-		mode = "auto"
-	}
-	var client llm.Client
-	if mode != "deterministic" {
-		if !cfg.Run.LLM {
-			log.Info("discover: run.llm is false — deterministic naming", "mode", mode)
-		} else if c, cerr := llm.NewFromConfig(ctx, cfg, ""); cerr != nil {
-			log.Warn("discover: llm client unavailable — deterministic naming", "mode", mode, "error", cerr)
-		} else {
-			client = c
-			if mdl, rerr := cfg.Route(""); rerr == nil {
-				log.Info("discover: AI naming enabled — one call per candidate endpoint, deterministic fallback per failure", "mode", mode, "model", mdl.Model)
-			}
+	client := resolveLLMClient(ctx, cfg, *noLLM, "endpoint naming")
+	if client != nil {
+		if mdl, rerr := cfg.Route(""); rerr == nil {
+			log.Info("AI naming enabled — one call per candidate endpoint, deterministic fallback per failure", "model", mdl.Model)
 		}
 	}
 	bd := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
 
+	_, err = discoverCore(ctx, target, discoverOutDir(*outDir), *stdout, client, bd)
+	return err
+}
+
+// discoverCore is the scan-then-tag engine shared by `tuxgo discover` and
+// convert's no-mapping fallback: for every entry file it finds the API
+// candidates and emits an editable draft into out (or prints with stdout).
+// AI naming runs per candidate when client is non-nil; the deterministic
+// picker fills any gaps. Drafts never clobber — existing ones stay and the
+// fresh draft lands alongside as a numbered sibling.
+func discoverCore(ctx context.Context, target, out string, stdout bool, client llm.Client, bd budget.Budget) (int, error) {
+	log := telemetry.Log(ctx)
+
 	fi, err := os.Stat(target)
 	if err != nil {
-		return fmt.Errorf("cannot access target path %s: %w", target, err)
+		return 0, fmt.Errorf("cannot access target path %s: %w", target, err)
 	}
 	dirMode := fi.IsDir()
-	out := discoverOutDir(*outDir)
 
 	irFiles, err := extractFlowIR(target)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(irFiles) == 0 {
-		return fmt.Errorf("no .pc or .pcf files found in %s", target)
+		return 0, fmt.Errorf("no .pc or .pcf files found in %s", target)
+	}
+
+	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
+	if err != nil {
+		log.Warn("audit archive unavailable", "error", err)
+		rec = nil
 	}
 
 	written, existing := 0, 0
@@ -102,11 +104,11 @@ func runDiscover(ctx context.Context, args []string) error {
 		}
 		src, err := os.ReadFile(f.Path)
 		if err != nil {
-			return fmt.Errorf("discover: read %s: %w", f.Path, err)
+			return written, fmt.Errorf("discover: read %s: %w", f.Path, err)
 		}
 		facts, err := scanLikeExtract(src, f)
 		if err != nil {
-			return fmt.Errorf("discover: scan %s: %w", f.Path, err)
+			return written, fmt.Errorf("discover: scan %s: %w", f.Path, err)
 		}
 		tree := flow.Build(src, facts, f.Entry, f)
 		candidates := flow.Discover(tree, f.Conditions)
@@ -114,10 +116,10 @@ func runDiscover(ctx context.Context, args []string) error {
 			fmt.Printf("- %s: no API candidates found (%d conditions inspected)\n", f.Entry, len(f.Conditions))
 			continue
 		}
-		aiNames := aiNameEndpoints(ctx, log, client, bd, f, tree, candidates, src)
+		aiNames := aiNameEndpoints(ctx, log, client, bd, f, tree, candidates, src, rec)
 		draft := renderDraft(f, candidates, dirMode, aiNames)
 		printDiscoverSummary(f, tree, candidates)
-		if *stdout {
+		if stdout {
 			fmt.Println()
 			fmt.Println(draft)
 			continue
@@ -141,25 +143,21 @@ func runDiscover(ctx context.Context, args []string) error {
 			path = alt
 		}
 		if err := os.MkdirAll(out, 0o755); err != nil {
-			return err
+			return written, err
 		}
 		if err := os.WriteFile(path, []byte(draft), 0o644); err != nil {
-			return fmt.Errorf("discover: write %s: %w", path, err)
+			return written, fmt.Errorf("discover: write %s: %w", path, err)
 		}
 		written++
 		log.Info("draft written", "path", path, "candidates", len(candidates))
 		fmt.Printf("  draft: %s\n", path)
 	}
-	if *stdout {
-		return nil
+	if stdout {
+		return written, nil
 	}
-	how := fmt.Sprintf("tuxgo plan %s -mapping <draft>", target)
-	if dirMode {
-		how = fmt.Sprintf("tuxgo convert %s -mapping %s", target, out)
-	}
-	fmt.Printf("\n%d draft(s) written to %s (%d existing kept) — edit one (tag name/route, fill module/readDBs), then: %s\n",
-		written, out, existing, how)
-	return nil
+	fmt.Printf("\n%d draft(s) written to %s (%d existing kept) — review name/route, fill module/readDBs if you generate into an existing repo, then: tuxgo convert %s\n",
+		written, out, existing, target)
+	return written, nil
 }
 
 // discoverOutDir resolves the draft directory: the -out override, else the
@@ -172,35 +170,29 @@ func discoverOutDir(flagOut string) string {
 }
 
 // renderDraft emits the mapping draft (DIS-D5): only strict-decodable keys,
-// metadata in comments, `name: ""`/`route: ""` to tag (or AI-suggested
-// pre-fills, advisory and editable), census comments, dbMethods pins when
-// the AI proposed them, and the non-candidates kept (commented) for user
-// control.
+// metadata in comments, pre-filled name/route (AI- or deterministic-suggested,
+// always editable), census comments, dbMethods pins when the AI proposed
+// them, and the non-candidates kept (commented) for user control. Module and
+// readDBs stay commented hints — module defaults to the service name at
+// load, so a draft is loadable as-is once names exist.
 func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool, aiNames map[string]aiSuggestion) string {
 	entry := filepath.Base(f.Path)
 	svc := strings.ToLower(strings.ReplaceAll(strings.TrimSuffix(entry, filepath.Ext(entry)), "-", "_"))
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# %s — generated by `tuxgo discover` (PRD-2026-09-10 endpoint discovery).\n", entry)
+	fmt.Fprintf(&sb, "# %s — generated by tuxgo (endpoint discovery).\n", entry)
 	sb.WriteString("#\n")
-	sb.WriteString("# HOW TO USE: tag every endpoint below with a Go method name and a route\n")
-	sb.WriteString("# path (or delete the entries you do not want), uncomment and fill\n")
-	sb.WriteString("# module/readDBs/routeGroup, then run:\n")
-	if dirMode {
-		sb.WriteString("#   tuxgo convert <target dir> -mapping <this draft's directory>\n")
-	} else {
-		sb.WriteString("#   tuxgo plan <file> -mapping <this file>\n")
-	}
-	sb.WriteString("# A condition you omit stays logic-only. `condition:` is the top-level\n")
-	sb.WriteString("# inventory index; `conditionRef:` is a nested qualifying block.\n")
+	sb.WriteString("# HOW TO USE: names/routes below are suggested defaults — review them\n")
+	sb.WriteString("# (or delete entries you do not want), optionally set module/readDBs,\n")
+	sb.WriteString("# then convert. A condition you omit stays logic-only. `condition:` is\n")
+	sb.WriteString("# the top-level inventory index; `conditionRef:` is a nested block.\n")
 	sb.WriteString("\n")
 	if dirMode {
 		fmt.Fprintf(&sb, "source: %s\n", entry)
 	}
-	fmt.Fprintf(&sb, "service: %s                    # TODO rename (must be a valid Go identifier)\n", svc)
-	fmt.Fprintf(&sb, "# module: your-app/pkg/services/%s\n", svc)
+	fmt.Fprintf(&sb, "service: %s\n", svc)
+	fmt.Fprintf(&sb, "# module: %s   # defaults to the service name; set your real import path for an existing repo\n", svc)
 	sb.WriteString("# readDBs:                     # logical read-DB names for handler wiring\n")
 	sb.WriteString("#   - EXAMPLE\n")
-	fmt.Fprintf(&sb, "# routeGroup: /%s\n", svc)
 	sb.WriteString("\nendpoints:\n")
 	mapped := map[int]string{} // condition index → candidate key ("" when only non-candidate)
 	for _, c := range candidates {

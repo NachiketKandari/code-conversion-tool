@@ -36,7 +36,7 @@ import (
 func runConvert(ctx context.Context, args []string) error {
 	log := telemetry.Log(ctx)
 	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
-	mappingPath := fs.String("mapping", "", "User mapping YAML, or a directory of per-service yamls (each with source: <entry file>) when the target dir holds multiple services (default: convert.mapping from config)")
+	mappingFlag := fs.String("mapping", "", "User mapping YAML, or a directory of per-service yamls (each with source: <entry file>) when the target dir holds multiple services (default: convert.mapping from config, else the mappings/ convention)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
 	baseDir := fs.String("base", "", "Output base directory override (default: target module root when paths.mainGo resolves, else paths.staged; dir fan-out appends each service name)")
 	noLLM := fs.Bool("no-llm", false, "Deterministic-only run: skip controller bodies (overrides run.llm)")
@@ -57,11 +57,15 @@ func runConvert(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	mappingResolved, err := resolveMapping(*mappingPath, cfg)
-	if err != nil {
-		return err
+	// Mapping resolution order: -mapping flag → convert.mapping → the
+	// mappings/ convention (discover/auto-draft output). Nothing found →
+	// scan the target, write drafts, and stop: the user reviews names,
+	// then re-runs this same command to convert (§4.2.8 — the tool never
+	// invents endpoints; it proposes and waits).
+	mappingPath := mappingFor(*mappingFlag, cfg)
+	if mappingPath == "" {
+		return draftAndStop(ctx, target, cfg, *noLLM)
 	}
-	*mappingPath = mappingResolved
 
 	files, mains, excluded, err := extractPlanIR(ctx, target, cfg, *fragment)
 	if err != nil {
@@ -74,22 +78,8 @@ func runConvert(ctx context.Context, args []string) error {
 	// stateless options holder, the recorder mutex-guarded).
 	b := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
 	v := validate.New(validate.Options{MainGo: cfg.Paths.MainGo, Compile: cfg.ValidateCfg.Compile, RunSmoke: cfg.ValidateCfg.Run})
-	llmEnabled := cfg.Run.LLM && !*noLLM
-	var client llm.Client
-	if llmEnabled {
-		c, cerr := llm.NewFromConfig(ctx, cfg, "")
-		if cerr != nil {
-			// The client is only needed for pending controller units; a fully
-			// resumed run proceeds without it.
-			log.Warn("llm client unavailable — pending controller units will fail", "error", cerr)
-			client = nil
-		} else {
-			client = c
-		}
-	} else {
-		log.Info("llm disabled — deterministic-only run, controller bodies will be skipped")
-		client = nil
-	}
+	client := resolveLLMClient(ctx, cfg, *noLLM, "controller bodies")
+	llmEnabled := client != nil
 	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
 	if err != nil {
 		log.Warn("audit archive unavailable", "error", err)
@@ -106,18 +96,34 @@ func runConvert(ctx context.Context, args []string) error {
 	// directory (per-service yamls) so the excluded services' mappings can
 	// be exempted from the orphan check deliberately.
 	if len(mains) > 1 || len(excluded) > 0 {
-		return runConvertFanout(ctx, w, target, mains, files, excluded, *mappingPath, baseRoot, degrade)
+		return runConvertFanout(ctx, w, target, mains, files, excluded, mappingPath, baseRoot, degrade)
 	}
 
-	mapping, err := plan.LoadMapping(*mappingPath)
+	// A directory mapping for a single-entry target: pick the yaml whose
+	// source:/stem matches the entry (the mappings/ convention).
+	if fi, serr := os.Stat(mappingPath); serr == nil && fi.IsDir() {
+		mappingPath, err = mappingForEntry(mappingPath, filepath.Base(mains[0].Path))
+		if err != nil {
+			return err
+		}
+	}
+	mapping, err := plan.LoadMapping(mappingPath)
 	if err != nil {
 		return err
 	}
-	res, led, err := convertOneService(ctx, w, mains[0], files, mapping, baseRoot, cfg.Concurrency.Workers)
+	// Derived module (module == service): the staged tree roots at the
+	// service folder, matching the dir fan-out's per-service subtrees —
+	// absPath drops the target path's first segment (the module root), so
+	// the base carries it.
+	base := baseRoot
+	if mapping.Module == mapping.Service {
+		base = filepath.Join(base, mapping.Service)
+	}
+	res, led, err := convertOneService(ctx, w, mains[0], files, mapping, base, cfg.Concurrency.Workers)
 	if err != nil {
 		return err
 	}
-	printServiceSummary(mapping.Service, res, led, baseRoot, degrade)
+	printServiceSummary(mapping.Service, res, led, base, degrade)
 	return nil
 }
 
@@ -132,6 +138,23 @@ type convertWiring struct {
 	client     llm.Client
 	audit      *audit.Recorder
 	llmEnabled bool
+}
+
+// draftAndStop is convert's no-mapping fallback (draft, then stop): the
+// target is scanned for API candidates and editable mapping drafts land in
+// mappings/ — AI-named when the model is reachable, deterministic names
+// otherwise — and the run exits before generating anything, so the user's
+// review is a free re-run (no tree cleanup, no half-converted state).
+func draftAndStop(ctx context.Context, target string, cfg *config.Config, noLLM bool) error {
+	client := resolveLLMClient(ctx, cfg, noLLM, "endpoint naming")
+	bd := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
+	n, err := discoverCore(ctx, target, discoverOutDir(""), false, client, bd)
+	if err != nil {
+		return err
+	}
+	telemetry.Log(ctx).Info("convert: no mapping found — drafts written, conversion deferred to the re-run",
+		"target", target, "drafts", n)
+	return nil
 }
 
 // resolveBaseRoot resolves the run's output base: the -base override wins,

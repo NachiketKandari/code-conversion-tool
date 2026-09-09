@@ -16,14 +16,12 @@ import (
 )
 
 // DefaultPaths mirrors the working-directory layout of
-// configs/.tuxgo.example.yaml.
+// configs/.tuxgo.example.yaml. Logs/audit are conventions, not config (see
+// Paths).
 func DefaultPaths() Paths {
 	return Paths{
-		Tux:    "tux/",
 		Target: "../existing-go-service",
 		MainGo: "",
-		Logs:   "conversion_logs/logs",
-		Audit:  "conversion_logs/audit",
 		Ledger: "conversion_logs/ledger",
 		State:  "conversion_logs/state",
 		Staged: "conversion_logs/_staged",
@@ -71,7 +69,6 @@ func Default() *Config {
 		Paths:       DefaultPaths(),
 		Batchpy:     DefaultBatchpy(),
 		Convert:     Convert{FlowDraft: ptrb(true)},
-		Discover:    Discover{Mode: "auto"},
 	}
 }
 
@@ -130,23 +127,9 @@ type Config struct {
 	ValidateCfg ValidateCfg `yaml:"validate"`
 	DB          DB          `yaml:"db"`
 	Convert     Convert     `yaml:"convert"`
-	Discover    Discover    `yaml:"discover"`
 	Buffers     Buffers     `yaml:"buffers"`
 	Paths       Paths       `yaml:"paths"`
 	Batchpy     Batchpy     `yaml:"batchpy"`
-}
-
-// Discover carries the endpoint-discovery command's options (PRD-2026-09-10
-// endpoint discovery). Naming mode is a switch: "ai" forces the model, "deterministic"
-// never calls it, "auto" (default) uses the model when configured and
-// reachable with a deterministic fallback per candidate. AI naming only
-// proposes DRAFT defaults — the draft stays the user's decision (§4.2.8),
-// the deterministic census never depends on it, and every failure degrades.
-type Discover struct {
-	// Mode is ai | deterministic | auto (-mode overrides for one run).
-	// Params always stay deterministic — the IR derives them from the
-	// query binds.
-	Mode string `yaml:"mode"`
 }
 
 // Batchpy carries the batch→Python conventions (PRD-2026-09-08 BP-7):
@@ -379,9 +362,11 @@ type ValidateCfg struct {
 	Run        bool   `yaml:"run"`
 }
 
-// Paths are the run's artifact roots, relative to the config file.
+// Paths are the run's artifact roots, relative to the config file. Logs and
+// audit are deliberately NOT configurable: `conversion_logs/logs` and
+// `conversion_logs/audit` are load-bearing conventions (gitignore, PRDs,
+// tooling) owned by the `-log-dir` global flag and the hardcoded audit root.
 type Paths struct {
-	Tux    string `yaml:"tux"`
 	Target string `yaml:"target"`
 	// MainGo is the target service's main.go (or any file inside the module)
 	// — the anchor Tier-B validation walks up from to the go.mod. Empty means
@@ -389,8 +374,6 @@ type Paths struct {
 	// syntax-only validation and stages generated code under paths.staged
 	// (the two-laptop constraint, plan-conversion §2).
 	MainGo string `yaml:"mainGo"`
-	Logs   string `yaml:"logs"`
-	Audit  string `yaml:"audit"`
 	Ledger string `yaml:"ledger"`
 	State  string `yaml:"state"`
 	Staged string `yaml:"staged"`

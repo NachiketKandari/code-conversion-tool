@@ -13,6 +13,8 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
+	"github.com/Public/convert-tux-to-go/internal/llm"
+	"github.com/Public/convert-tux-to-go/internal/plan"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
 )
 
@@ -137,16 +139,121 @@ func resolveBatchInput(positional []string, cfg *config.Config) (string, error) 
 	return "", fmt.Errorf("no input target: pass a .pc/.pcf file or directory, or set batchpy.input in .tuxgo.yaml")
 }
 
-// resolveMapping picks the endpoint mapping: the -mapping flag wins, else
-// convert.mapping from the yaml, else an error naming both sources.
-func resolveMapping(flagValue string, cfg *config.Config) (string, error) {
+// defaultMappingsDir is the mapping-draft convention: discover and
+// convert's no-mapping fallback write here; convert resolves it last.
+const defaultMappingsDir = "mappings"
+
+// mappingFor resolves the endpoint mapping: the -mapping flag wins, else
+// convert.mapping from the yaml, else the mappings/ convention when that
+// directory holds at least one draft yaml. "" = nothing found (convert
+// then drafts; plan errors).
+func mappingFor(flagValue string, cfg *config.Config) string {
 	if flagValue != "" {
-		return flagValue, nil
+		return flagValue
 	}
 	if cfg.Convert.Mapping != "" {
-		return cfg.Convert.Mapping, nil
+		return cfg.Convert.Mapping
 	}
-	return "", fmt.Errorf("must provide -mapping <yaml> or set convert.mapping in .tuxgo.yaml — endpoints are user-specified (PRD §4.2.8)")
+	if fi, err := os.Stat(defaultMappingsDir); err == nil && fi.IsDir() && hasMappingYamls(defaultMappingsDir) {
+		return defaultMappingsDir
+	}
+	return ""
+}
+
+// hasMappingYamls reports whether dir holds at least one .yaml/.yml file.
+func hasMappingYamls(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".yaml", ".yml":
+			return true
+		}
+	}
+	return false
+}
+
+// mappingForEntry picks one mapping yaml out of a directory for a
+// single-entry convert: a mapping whose source: names the entry file wins,
+// else the one whose stem matches the entry stem. Zero matches is an error
+// listing the directory; two stem matches are ambiguous and refuse to guess.
+func mappingForEntry(dir, entryBase string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", fmt.Errorf("convert: read mapping dir %s: %w", dir, err)
+	}
+	var bySource, byStem []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".yaml", ".yml":
+		default:
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		m, err := plan.LoadMapping(path)
+		if err != nil {
+			return "", err
+		}
+		if m.Source != "" && strings.EqualFold(filepath.Base(m.Source), entryBase) {
+			bySource = append(bySource, path)
+		}
+		// Stem match tolerates the .mapping.yaml double extension the
+		// draft convention uses (SVC_X.mapping.yaml ↔ SVC_X.pc).
+		nameStem := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
+		nameStem = strings.TrimSuffix(nameStem, ".mapping")
+		if nameStem == stemOf(entryBase) {
+			byStem = append(byStem, path)
+		}
+	}
+	switch {
+	case len(bySource) == 1:
+		return bySource[0], nil
+	case len(bySource) > 1:
+		return "", fmt.Errorf("convert: mappings %s and %s both declare source %s — pass -mapping <file> explicitly", bySource[0], bySource[1], entryBase)
+	case len(byStem) == 1:
+		return byStem[0], nil
+	case len(byStem) > 1:
+		return "", fmt.Errorf("convert: %s holds several mappings for %s — pass -mapping <file> explicitly", dir, entryBase)
+	default:
+		return "", fmt.Errorf("convert: no mapping in %s matches entry %s (expected source: %s or file name %s.mapping.yaml)", dir, entryBase, entryBase, stemOf(entryBase))
+	}
+}
+
+// stemOf strips a .pc/.pcf (case-insensitive) extension; other extensions
+// ride along.
+func stemOf(name string) string {
+	ext := filepath.Ext(name)
+	if strings.EqualFold(ext, ".pc") || strings.EqualFold(ext, ".pcf") {
+		return strings.TrimSuffix(name, ext)
+	}
+	return name
+}
+
+// resolveLLMClient is the one AI knob, shared by every LLM-bound command
+// (convert, batchpy, gentest, discover): the client exists only when
+// run.llm is true and -no-llm was not passed. A nil client means "run
+// deterministic" for the caller's seam; the availability WARN keeps the
+// degrade visible. Never log the key value itself.
+func resolveLLMClient(ctx context.Context, cfg *config.Config, noLLM bool, purpose string) llm.Client {
+	log := telemetry.Log(ctx)
+	if !cfg.Run.LLM || noLLM {
+		log.Info("llm disabled — deterministic-only run", "purpose", purpose)
+		return nil
+	}
+	c, err := llm.NewFromConfig(ctx, cfg, "")
+	if err != nil {
+		log.Warn("llm client unavailable — falling back to deterministic behavior", "purpose", purpose, "error", err)
+		return nil
+	}
+	return c
 }
 
 // logConfigRouting proves the yaml routing seam end to end: which profile

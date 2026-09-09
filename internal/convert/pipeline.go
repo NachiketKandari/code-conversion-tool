@@ -9,10 +9,8 @@ package convert
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"go/format"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -626,29 +624,28 @@ func dbSignatures(p *plan.Plan, bodies map[string]dbOut) string {
 }
 
 // recordAttempt writes the unit's audit record (§4.7): template, prompt,
-// raw response, validation outcome. Best-effort.
+// raw response, validation outcome — via the shared audit.Exchange so every
+// LLM seam archives the same shape. Best-effort.
 func recordAttempt(ctx context.Context, opts Options, u plan.Unit, attempt int, prompt, response string, errs []string) {
 	if opts.Audit == nil {
 		return
 	}
-	record := map[string]any{
-		"unit": u.ID, "kind": u.Kind, "name": u.Name, "attempt": attempt,
-		"template": u.TemplateID, "llm": u.LLM,
-		"prompt":   prompt,
-		"response": response,
-		"errors":   errs,
-		"outcome":  "ok",
-	}
+	outcome := "ok"
 	if len(errs) > 0 {
-		record["outcome"] = "failed"
+		outcome = "failed"
 	}
-	data, err := json.Marshal(record)
-	if err != nil {
-		return
-	}
-	if _, err := opts.Audit.Write(fmt.Sprintf("unit-%s-attempt%d.json", u.ID, attempt), func(w io.Writer) error {
-		_, err := w.Write(data)
-		return err
+	if _, err := opts.Audit.WriteExchange(audit.Exchange{
+		Unit:     u.ID,
+		Kind:     string(u.Kind),
+		Name:     u.Name,
+		Attempt:  attempt,
+		Template: u.TemplateID,
+		LLM:      u.LLM,
+		Prompt:   prompt,
+		Response: response,
+		Errors:   errs,
+		Outcome:  outcome,
+		File:     fmt.Sprintf("unit-%s-attempt%d.json", u.ID, attempt),
 	}); err != nil {
 		telemetry.Log(ctx).Warn("audit record failed", "unit", u.ID, "error", err)
 	}

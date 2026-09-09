@@ -196,10 +196,14 @@ Available Commands:
                inventory, FML ops, external fns) as JSON
   plan         Generate the deterministic decomposition plan from the IR + the
                user's endpoint mapping (plan.json/plan.md in the ledger dir)
-  convert      Execute the conversion plan into the target Go service (or staged
-               output when the target is absent), resumable via the ledger; a
-               directory with several Tuxedo entries converts one worker per
-               service in parallel (mapping directory with source: entries)
+  convert      Convert a .pc/.pcf file or directory into the target Go service.
+               With a mapping present (-mapping, convert.mapping, or the
+               mappings/ convention) it converts; without one it first scans
+               the target and writes editable mapping drafts to mappings/
+               (AI-named when the model is reachable, deterministic names
+               otherwise) and stops — review, then re-run the same command
+               to convert. A directory with several Tuxedo entries converts
+               one worker per service in parallel
   batchpy      Convert Pro*C batch programs into Python service modules
                (SQL constants + repository/DAL + service with process_daily_batch;
                pychk syntax gate + SQL fidelity + retention report)
@@ -209,12 +213,12 @@ Available Commands:
   flow         Flow-IR accuracy report for a .pc/.pcf file or directory:
                per-function statement coverage, idiom hints, and (with -go)
                the deterministic Go transpilation draft
-  discover     Scan-then-tag endpoint discovery: find the API candidates
-               (conditions enclosing Fget32 reads + non-error Fadd32
-               writes) and write a mapping draft per entry to mappings/
-               (default; -out overrides, -stdout prints) — tag name/route
-               before plan/convert consume it; the target falls back to
-               convert.input, so a bare discover command works
+  discover     Endpoint scan-then-tag: find the API candidates (conditions
+               enclosing Fget32 reads + non-error Fadd32 writes) and write a
+               mapping draft per entry to mappings/ (default; -out overrides,
+               -stdout prints). The same engine convert runs when no mapping
+               exists; convert is the day-to-day entry, discover stays for
+               drafting ahead of time
   version      Print version information
 
 `)
@@ -224,7 +228,7 @@ Available Commands:
 // arguments so flags may appear before or after the target path — the stdlib
 // flag package otherwise stops parsing at the first positional.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true, "layers": true, "mode": true}
+	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true, "layers": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {

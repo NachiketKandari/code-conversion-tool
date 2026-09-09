@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
@@ -46,10 +47,11 @@ Rules:
 
 // aiNameEndpoints proposes draft names for every candidate. With a client:
 // one LLM call per candidate endpoint carrying the branch source, its FML
-// reads/writes, and the involved query SQL. Without one (or per-candidate
-// on failure): the deterministic picker. The census and draft emission
-// never depend on the LLM.
-func aiNameEndpoints(ctx context.Context, log *slog.Logger, client llm.Client, b budget.Budget, f *ir.File, tree *flow.Tree, candidates []flow.Candidate, src []byte) map[string]aiSuggestion {
+// reads/writes, and the involved query SQL — each attempt (prompt + raw
+// response + parse outcome) lands in the run's audit trail when rec is set.
+// Without a client (or per-candidate on failure): the deterministic picker.
+// The census and draft emission never depend on the LLM.
+func aiNameEndpoints(ctx context.Context, log *slog.Logger, client llm.Client, b budget.Budget, f *ir.File, tree *flow.Tree, candidates []flow.Candidate, src []byte, rec *audit.Recorder) map[string]aiSuggestion {
 	out := make(map[string]aiSuggestion, len(candidates))
 	queriesByID := make(map[string]*ir.Query, len(f.Queries))
 	for _, q := range f.Queries {
@@ -68,7 +70,7 @@ func aiNameEndpoints(ctx context.Context, log *slog.Logger, client llm.Client, b
 			out[c.Key] = deterministicSuggestion(c)
 			continue
 		}
-		sug, err := aiNameOne(ctx, log, client, b, f, cond, queriesByID, lines)
+		sug, err := aiNameOne(ctx, log, client, b, f, cond, queriesByID, lines, rec)
 		if err != nil {
 			log.Warn("ai naming failed — deterministic names used", "candidate", c.Key, "error", err)
 			out[c.Key] = deterministicSuggestion(c)
@@ -151,7 +153,7 @@ func kebabName(name string) string {
 	return sb.String()
 }
 
-func aiNameOne(ctx context.Context, log *slog.Logger, client llm.Client, b budget.Budget, f *ir.File, cond *ir.Condition, queriesByID map[string]*ir.Query, lines []string) (aiSuggestion, error) {
+func aiNameOne(ctx context.Context, log *slog.Logger, client llm.Client, b budget.Budget, f *ir.File, cond *ir.Condition, queriesByID map[string]*ir.Query, lines []string, rec *audit.Recorder) (aiSuggestion, error) {
 	var sb strings.Builder
 	sb.WriteString("Endpoint branch (legacy C):\n\n")
 	sb.WriteString(branchSlice(lines, cond.StartLine, cond.EndLine) + "\n\n")
@@ -181,6 +183,23 @@ func aiNameOne(ctx context.Context, log *slog.Logger, client llm.Client, b budge
 	if err := b.CheckInput(prompt); err != nil {
 		return aiSuggestion{}, err
 	}
+	record := func(attempt int, response string, err error) {
+		if rec == nil {
+			return
+		}
+		var errs []string
+		outcome := "ok"
+		if err != nil {
+			errs = []string{err.Error()}
+			outcome = "failed"
+		}
+		if _, werr := rec.WriteExchange(audit.Exchange{
+			Unit: f.Entry, Kind: "discover", Name: fmt.Sprintf("c%d", cond.Index), Attempt: attempt,
+			Prompt: prompt, Response: response, Errors: errs, Outcome: outcome,
+		}); werr != nil {
+			log.Warn("audit exchange failed", "candidate", fmt.Sprintf("c%d", cond.Index), "error", werr)
+		}
+	}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		resp, err := client.Chat(ctx, llm.ChatRequest{
@@ -189,18 +208,22 @@ func aiNameOne(ctx context.Context, log *slog.Logger, client llm.Client, b budge
 			Temperature: 0.2,
 		})
 		if err != nil {
+			record(attempt, "", err)
 			lastErr = err
 			continue
 		}
 		if err := b.CheckOutput(resp.Content); err != nil {
+			record(attempt, resp.Content, err)
 			lastErr = err
 			continue
 		}
 		sug, perr := parseNameJSON(resp.Content, cond.QueryIDs)
 		if perr != nil {
+			record(attempt, resp.Content, perr)
 			lastErr = perr
 			continue
 		}
+		record(attempt, resp.Content, nil)
 		log.Debug("ai naming proposal", "condition", cond.Index, "name", sug.Name)
 		return sug, nil
 	}

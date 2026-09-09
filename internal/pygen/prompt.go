@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/pychk"
 	"github.com/Public/convert-tux-to-go/internal/pyplan"
+	"github.com/Public/convert-tux-to-go/internal/telemetry"
 	"github.com/Public/convert-tux-to-go/internal/templates"
 )
 
@@ -34,6 +36,23 @@ func fillServiceBody(ctx context.Context, opts Options) (body string, calls int,
 		issues = append(issues, contractIssues(opts.Plan, serviceBody)...)
 		return issues
 	}
+	record := func(attempt int, prompt, response string, err error) {
+		if opts.Audit == nil {
+			return
+		}
+		var errs []string
+		outcome := "ok"
+		if err != nil {
+			errs = []string{err.Error()}
+			outcome = "failed"
+		}
+		if _, werr := opts.Audit.WriteExchange(audit.Exchange{
+			Unit: p.Module, Kind: "batchpy", Name: p.ClassName, Attempt: attempt,
+			Prompt: prompt, Response: response, Errors: errs, Outcome: outcome,
+		}); werr != nil {
+			telemetry.Log(ctx).Warn("audit exchange failed", "module", p.Module, "error", werr)
+		}
+	}
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		prompt := userPrompt(p, opts, notes)
@@ -49,23 +68,27 @@ func fillServiceBody(ctx context.Context, opts Options) (body string, calls int,
 			},
 		})
 		if callErr != nil {
+			record(attempt, prompt, "", callErr)
 			return "", calls, notes, fmt.Errorf("llm chat: %w", callErr)
 		}
 		calls++
 		if opts.Budget.MaxOutputTokens > 0 {
 			if berr := opts.Budget.CheckOutput(resp.Content); berr != nil {
+				record(attempt, prompt, resp.Content, berr)
 				notes = append(notes, "output over budget: "+berr.Error())
 				lastErr = berr
 				continue
 			}
 		}
-		body = reindent(extractPython(resp.Content))
+		body := reindent(extractPython(resp.Content))
 		content := assembleWithBody(p, opts.SourcePath, body)
 		issues := gate(content, body)
 		if len(issues) == 0 {
+			record(attempt, prompt, resp.Content, nil)
 			return body, calls, notes, nil
 		}
 		lastErr = fmt.Errorf("structural check failed: %s", issueSummary(issues))
+		record(attempt, prompt, resp.Content, lastErr)
 		notes = append(notes, fmt.Sprintf("llm attempt %d rejected: %v", attempt+1, lastErr))
 	}
 	return "", calls, notes, lastErr

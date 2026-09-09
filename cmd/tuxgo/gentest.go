@@ -11,7 +11,6 @@ import (
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
-	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
 	"github.com/Public/convert-tux-to-go/internal/testgen"
 	"github.com/Public/convert-tux-to-go/internal/testscan"
@@ -104,19 +103,8 @@ func runGentest(ctx context.Context, args []string) error {
 		base = "conversion_logs/_staged"
 	}
 
-	llmEnabled := cfg.Run.LLM && !*noLLM
-	var client llm.Client
-	if llmEnabled {
-		c, cerr := llm.NewFromConfig(ctx, cfg, "")
-		if cerr != nil {
-			log.Warn("llm client unavailable — controller gap-fill degrades to llm-required notes", "error", cerr)
-			client = nil
-		} else {
-			client = c
-		}
-	} else {
-		log.Info("llm disabled — deterministic-only run, field-mapping controllers report llm-required")
-	}
+	client := resolveLLMClient(ctx, cfg, *noLLM, "controller gap-fill")
+	llmEnabled := client != nil
 
 	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
 	if err != nil {

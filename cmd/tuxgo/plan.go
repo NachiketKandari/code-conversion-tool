@@ -46,9 +46,9 @@ func runPlan(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	mappingResolved, err := resolveMapping(*mappingPath, cfg)
-	if err != nil {
-		return err
+	mappingResolved := mappingFor(*mappingPath, cfg)
+	if mappingResolved == "" {
+		return fmt.Errorf("must provide -mapping <yaml> or set convert.mapping in .tuxgo.yaml — endpoints are user-specified (PRD §4.2.8)")
 	}
 	*mappingPath = mappingResolved
 

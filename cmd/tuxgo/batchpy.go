@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
@@ -19,7 +18,6 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/cproc/batchflow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
-	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/pygen"
 	"github.com/Public/convert-tux-to-go/internal/pyplan"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
@@ -100,18 +98,8 @@ func runBatchpy(ctx context.Context, args []string) error {
 		return err
 	}
 
-	llmEnabled := cfg.Run.LLM && !*noLLM
-	var client llm.Client
-	if llmEnabled {
-		c, cerr := llm.NewFromConfig(ctx, cfg, "")
-		if cerr != nil {
-			log.Warn("llm client unavailable — service bodies degrade to placeholders", "error", cerr)
-		} else {
-			client = c
-		}
-	} else {
-		log.Info("llm disabled — deterministic-only run, service bodies of repo-shape batches stay placeholders")
-	}
+	client := resolveLLMClient(ctx, cfg, *noLLM, "batch service bodies")
+	llmEnabled := client != nil
 	bg := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
 
 	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
@@ -126,9 +114,6 @@ func runBatchpy(ctx context.Context, args []string) error {
 	// workers>1 parallelizes the per-file pipeline including LLM calls, so
 	// endpoint rate limits are the ceiling). Results print in input order.
 	workers := cfg.Concurrency.Workers
-	if workers < 1 {
-		workers = 1
-	}
 	log.Info("batchpy fan-out", "target", target, "files", len(paths),
 		"workers", workers, "out", out)
 	type fileResult struct {
@@ -141,28 +126,21 @@ func runBatchpy(ctx context.Context, args []string) error {
 		err   error
 	}
 	results := make([]fileResult, len(paths))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, workers)
-	for i, path := range paths {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int, path string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			start := time.Now()
-			telemetry.Log(ctx).Info("batch file started", "source", path)
-			res, plan, name, err := convertBatchFile(ctx, path, b, pygen.Options{
-				NoLLM: !llmEnabled || client == nil, Client: client, Budget: bg, MaxRetries: cfg.ValidateCfg.MaxRetries,
-			})
-			var wp *wrongPipelineError
-			if errors.As(err, &wp) {
-				results[i] = fileResult{path: path, skip: err.Error(), start: start}
-				return
-			}
-			results[i] = fileResult{path: path, res: res, plan: plan, name: name, start: start, err: err}
-		}(i, path)
-	}
-	wg.Wait()
+	runIndexed(len(paths), workers, func(i int) {
+		path := paths[i]
+		start := time.Now()
+		telemetry.Log(ctx).Info("batch file started", "source", path)
+		res, plan, name, err := convertBatchFile(ctx, path, b, pygen.Options{
+			NoLLM: !llmEnabled || client == nil, Client: client, Budget: bg, MaxRetries: cfg.ValidateCfg.MaxRetries,
+			Audit: rec,
+		})
+		var wp *wrongPipelineError
+		if errors.As(err, &wp) {
+			results[i] = fileResult{path: path, skip: err.Error(), start: start}
+			return
+		}
+		results[i] = fileResult{path: path, res: res, plan: plan, name: name, start: start, err: err}
+	})
 
 	// Module-collision gate: the module name comes from the batch's
 	// c_ServiceName literal, so distinct files can declare the same module —

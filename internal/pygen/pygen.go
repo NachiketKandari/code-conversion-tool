@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/pychk"
@@ -31,6 +32,9 @@ type Options struct {
 	Client     llm.Client
 	Budget     budget.Budget
 	MaxRetries int
+	// Audit archives each LLM attempt (prompt + raw response + gate errors)
+	// when set; nil skips the archive — never the generation itself.
+	Audit *audit.Recorder
 	// Check is the structural gate (injectable for tests); nil = pychk.Check.
 	Check func(src string) []pychk.Issue
 }
