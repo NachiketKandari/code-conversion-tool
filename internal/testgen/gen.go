@@ -30,6 +30,7 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
 	"github.com/Public/convert-tux-to-go/internal/templates"
 	"github.com/Public/convert-tux-to-go/internal/testscan"
+	"github.com/Public/convert-tux-to-go/internal/validate"
 )
 
 // Options carries one gentest generation run's wiring.
@@ -390,12 +391,18 @@ func outNames(sc *serviceCtx, layer testscan.Layer, dir string) (file, suite str
 }
 
 // outPathFor computes the staged output path: module-root-relative when the
-// service tree sits in a module, else service-relative.
+// service tree sits in a module, else service-relative. Both operands are
+// made absolute first — sc.moduleRoot is absolute (validate.ResolveModuleRoot)
+// while dir may be relative (A3.3: keep Rel well-formed either way).
 func outPathFor(baseDir string, sc *serviceCtx, dir, outFile string) (string, error) {
 	if baseDir == "" {
 		return "", fmt.Errorf("gentest: no output base directory (paths.staged or -base required)")
 	}
-	rel, err := filepath.Rel(sc.moduleRoot, dir)
+	absDir := dir
+	if abs, aerr := filepath.Abs(dir); aerr == nil {
+		absDir = abs
+	}
+	rel, err := filepath.Rel(sc.moduleRoot, absDir)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		rel = ""
 	}
@@ -512,17 +519,15 @@ func (sc *serviceCtx) factsFor(l testscan.Layer) *layerFacts {
 	return &layerFacts{DB: map[string]*dbFact{}, Ctrl: map[string]*ctrlFact{}, Handler: map[string]*handlerFact{}}
 }
 
-// moduleRootOf walks up from dir for the nearest go.mod; dir itself when
-// none exists.
+// moduleRootOf walks up from dir for the nearest go.mod via the shared
+// validate.ResolveModuleRoot; testgen's policy degrades to dir itself when
+// none exists (staged trees may sit outside any module).
 func moduleRootOf(dir string) string {
-	for d := dir; ; d = filepath.Dir(d) {
-		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
-			return d
-		}
-		if d == filepath.Dir(d) {
-			return dir
-		}
+	root, err := validate.ResolveModuleRoot(dir)
+	if err != nil {
+		return dir
 	}
+	return root
 }
 
 // moduleName resolves the target module: the go.mod module line, else the

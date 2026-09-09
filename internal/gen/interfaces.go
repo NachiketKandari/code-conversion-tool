@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/goast"
 	"github.com/Public/convert-tux-to-go/internal/plan"
@@ -185,7 +186,7 @@ func (s *Service) DBInterfaceSkeleton() (string, error) {
 func (s *Service) ControllerInterface(p *plan.Plan) (string, error) {
 	data := templates.ControllerInterfaceData{
 		Package:    "controller",
-		StructName: lowerFirst(s.Mapping.Service) + "Controller",
+		StructName: common.LowerFirst(s.Mapping.Service) + "Controller",
 		IfaceName:  s.If + "Controller",
 		CtorName:   "New" + s.If + "Controller",
 		DBPkg:      s.Mapping.ImportPath("db"),
@@ -208,7 +209,7 @@ func (s *Service) HandlerInterface(p *plan.Plan) (string, error) {
 		Package:         "handler",
 		Module:          s.Module,
 		Service:         s.Mapping.Service,
-		StructName:      lowerFirst(s.Mapping.Service) + "Handler",
+		StructName:      common.LowerFirst(s.Mapping.Service) + "Handler",
 		IfaceName:       s.If + "Handler",
 		CtorName:        "New" + s.If + "Handler",
 		WiringFnName:    s.If + "Controller",
@@ -235,7 +236,7 @@ func (s *Service) HandlerMethodsFile() (string, error) {
 	sb.WriteString(")\n")
 	for _, e := range s.Mapping.Endpoints {
 		body, err := render(templates.HandlerMethod, templates.HandlerMethodData{
-			StructName:  lowerFirst(s.Mapping.Service) + "Handler",
+			StructName:  common.LowerFirst(s.Mapping.Service) + "Handler",
 			Name:        e.Name,
 			RequestType: "models." + s.requestType(e.Name),
 		})

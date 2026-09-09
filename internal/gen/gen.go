@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/plan"
@@ -62,7 +63,7 @@ func NewService(o Options) (*Service, error) {
 	s := &Service{Mapping: o.Plan.Mapping, Main: o.Main, WithGorm: o.WithGorm, source: o.Source}
 	s.ModelsPkg = s.Mapping.ImportPath("models")
 	s.Module = strings.SplitN(s.Mapping.Module, "/", 2)[0]
-	s.If = exportName(s.Mapping.Service)
+	s.If = common.Export(s.Mapping.Service)
 	s.structLower = s.Mapping.Service
 	s.queries = make(map[string]*ir.Query, len(o.Main.Queries))
 	s.hostVars = make(map[string]ir.HostVar, len(o.Main.HostVars))
@@ -135,42 +136,14 @@ func (s *Service) Pin(queryID string) (plan.MethodPin, bool) {
 	return pin, ok
 }
 
-func exportName(service string) string {
-	r := []rune(service)
-	return strings.ToUpper(string(r[0])) + string(r[1:])
-}
-
 // lowerFirst renders navController/navHandler-style receiver type names.
-func lowerFirst(s string) string {
-	r := []rune(s)
-	return strings.ToLower(string(r[0])) + string(r[1:])
-}
-
 // fieldFromFML derives a Go field name from an FML field name:
 // FML_COMP_CD → CompCd (deterministic; reference prettiness is a §4.8.5 note).
 func fieldFromFML(fml string) string {
-	return exportName(camelLower(strings.ToLower(strings.TrimPrefix(fml, "FML_"))))
+	return common.Export(common.CamelLowerGo(strings.ToLower(strings.TrimPrefix(fml, "FML_"))))
 }
 
 // camelLower renders snake_case host var names as lowerCamelCase Go names.
-func camelLower(s string) string {
-	parts := strings.Split(s, "_")
-	var sb strings.Builder
-	for i, p := range parts {
-		if p == "" {
-			continue
-		}
-		if i == 0 {
-			sb.WriteString(p)
-			continue
-		}
-		r := []rune(p)
-		sb.WriteRune([]rune(strings.ToUpper(string(r[0])))[0])
-		sb.WriteString(string(r[1:]))
-	}
-	return sb.String()
-}
-
 // requestType / responseType / rowType naming conventions.
 func (s *Service) requestType(endpoint string) string  { return endpoint + "Request" }
 func (s *Service) responseType(endpoint string) string { return endpoint + "Response" }
@@ -205,10 +178,10 @@ func (s *Service) rowFields(q *ir.Query) ([]templates.FieldSpec, error) {
 		if i < len(q.Aliases) {
 			alias := q.Aliases[i]
 			spec.DBTag = alias
-			spec.Name = exportName(camelLower(strings.ToLower(alias)))
+			spec.Name = common.Export(common.CamelLowerGo(strings.ToLower(alias)))
 		} else {
 			spec.DBTag = strings.ToUpper(strings.TrimPrefix(hvName, "sql_"))
-			spec.Name = exportName(camelLower(strings.TrimPrefix(hvName, "sql_")))
+			spec.Name = common.Export(common.CamelLowerGo(strings.TrimPrefix(hvName, "sql_")))
 		}
 		spec.Type = s.hostType(hvName, spec.DBTag)
 		fields = append(fields, spec)
@@ -379,7 +352,7 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 	case ir.QuerySelectMulti:
 		row := s.RowName(u.QueryIDs[0], u.Name)
 		d.Multi, d.RowType = true, "models."+row
-		d.VarName = lowerFirst(row)
+		d.VarName = common.LowerFirst(row)
 		if !strings.HasSuffix(d.VarName, "s") {
 			d.VarName += "s"
 		}
@@ -388,7 +361,7 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 			d.Scalar, d.VarName = "int64", "count"
 		} else {
 			row := s.RowName(u.QueryIDs[0], u.Name)
-			d.RowType, d.VarName = "models."+row, lowerFirst(row)
+			d.RowType, d.VarName = "models."+row, common.LowerFirst(row)
 		}
 	case ir.QueryInsert, ir.QueryUpdate, ir.QueryDelete, ir.QueryMerge:
 		// DML contract (severity F2): INSERT/UPDATE/DELETE render through
@@ -441,7 +414,7 @@ func (s *Service) DBMethod(u plan.Unit) (body, signature string, needsSQL bool, 
 func (s *Service) dbParams(q *ir.Query, pin plan.MethodPin) ([]templates.ParamSpec, error) {
 	specs := make([]templates.ParamSpec, 0, len(q.Binds))
 	for i, bind := range q.Binds {
-		spec := templates.ParamSpec{Name: camelLower(bind), Type: "string"}
+		spec := templates.ParamSpec{Name: common.CamelLowerGo(bind), Type: "string"}
 		if i < len(pin.Params) {
 			name, typ, hasType := strings.Cut(pin.Params[i], ":")
 			if name != "" {

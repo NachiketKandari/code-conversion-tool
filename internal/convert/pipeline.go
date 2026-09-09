@@ -424,13 +424,13 @@ var storeCallRe = regexp.MustCompile(`s\.store\.([A-Za-z0-9_]+)\(`)
 
 // requiredCalls lists the unique store method names in the view, in order.
 func requiredCalls(view string) []string {
-	var out []string
-	seen := map[string]bool{}
+	var names []string
 	for _, m := range storeCallRe.FindAllStringSubmatch(view, -1) {
-		if !seen[m[1]] {
-			seen[m[1]] = true
-			out = append(out, "s.store."+m[1])
-		}
+		names = append(names, m[1])
+	}
+	var out []string
+	for _, n := range common.UniqueStable(names) {
+		out = append(out, "s.store."+n)
 	}
 	return out
 }
@@ -469,26 +469,9 @@ func branchSource(src string, from, to int) string {
 func validateBody(opts Options, body string) []string {
 	wrapped := "package controller\n\nimport (\n\t\"context\"\n\tmodels \"mutual-fund-be/pkg/services/nav/models\"\n)\n\ntype t struct{}\n\nfunc (t) Check(ctx context.Context) (err error) {\n" + body + "\n}\n"
 	if _, ferr := format.Source([]byte(wrapped)); ferr != nil {
-		return trimGoErrors(ferr.Error())
+		return validate.TrimGoErrors(ferr.Error())
 	}
 	return nil
-}
-
-// trimGoErrors keeps compiler-shaped lines from a parse error, bounded.
-func trimGoErrors(out string) []string {
-	var kept []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimRight(line, " \t\r")
-		if line == "" {
-			continue
-		}
-		kept = append(kept, line)
-		if len(kept) >= 40 {
-			kept = append(kept, "… (output trimmed)")
-			break
-		}
-	}
-	return kept
 }
 
 // cleanBody strips code fences and stray blank lines the model may add —

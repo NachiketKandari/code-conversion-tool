@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/batchflow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 )
@@ -106,8 +107,8 @@ func Build(flow *batchflow.Flow, opts Options) *Plan {
 	p := &Plan{
 		Module:       flow.ServiceName,
 		ServiceName:  flow.ServiceName,
-		ClassName:    Camel(flow.ServiceName) + "Service",
-		RepoName:     Camel(flow.ServiceName) + "Repository",
+		ClassName:    common.CamelPy(flow.ServiceName) + "Service",
+		RepoName:     common.CamelPy(flow.ServiceName) + "Repository",
 		Shape:        flow.Shape,
 		DMLLoop:      opts.DMLLoop,
 		ChunkSize:    opts.ChunkSize,
@@ -238,24 +239,11 @@ func firstTable(q *ir.Query) string {
 	}
 	// DB-link-qualified tables (SCHEME@CONTENT_DB) and schema-qualified
 	// names sanitize to Python-safe identifiers.
-	return strings.ToLower(pyIdent(q.Tables[0]))
+	return strings.ToLower(common.PyIdent(q.Tables[0]))
 }
 
 // pyIdent coerces a C/SQL identifier fragment into a Python-safe one:
 // non-alphanumerics become underscores.
-func pyIdent(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	return b.String()
-}
-
 // emitSQL renders the IR's canonical SQL as executable oracledb text (the
 // documented BP-3 rubric transforms, tolerance-matched in sqlchk's
 // normalizer): Pro*C host-variable INTO lists are stripped from SELECTs and
@@ -405,19 +393,6 @@ func bindIdx(binds, rowShape []string) []int {
 
 // Camel converts snake/dashed identifiers to CamelCase (bat_mf_mbm_rt →
 // BatMfMbmRt).
-func Camel(s string) string {
-	parts := strings.FieldsFunc(pyIdent(s), func(r rune) bool { return r == '_' || r == '-' || r == '.' })
-	var sb strings.Builder
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		sb.WriteString(strings.ToUpper(p[:1]))
-		sb.WriteString(p[1:])
-	}
-	return sb.String()
-}
-
 // CodeView renders the entry body for the LLM seam (BP-6, the batch analogue
 // of the query-replaced branch view): every EXEC SQL span becomes one
 // placeholder line naming the deterministic call or cursor op, dropped
@@ -523,7 +498,7 @@ func (p *Plan) codeViewEntries(src string) []viewEntry {
 			continue
 		}
 		if text, ok := placeholder[l]; ok {
-			out = append(out, viewEntry{Line: l, Text: leading(lines[l-1]) + text})
+			out = append(out, viewEntry{Line: l, Text: common.Leading(lines[l-1]) + text})
 			continue
 		}
 		out = append(out, viewEntry{Line: l, Text: lines[l-1]})
@@ -636,13 +611,4 @@ func skipQuoted(text string, i int) int {
 		}
 	}
 	return len(text) - 1
-}
-
-func leading(line string) string {
-	for i, r := range line {
-		if r != ' ' && r != '\t' {
-			return line[:i]
-		}
-	}
-	return line
 }

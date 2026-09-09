@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/pychk"
 	"github.com/Public/convert-tux-to-go/internal/pyplan"
@@ -112,15 +113,6 @@ func userPrompt(p *pyplan.Plan, opts Options, notes []string) string {
 	return sb.String()
 }
 
-func leadingOf(line string) string {
-	for i, r := range line {
-		if r != ' ' && r != '\t' {
-			return line[:i]
-		}
-	}
-	return line
-}
-
 func issueSummary(issues []pychk.Issue) string {
 	parts := make([]string, 0, len(issues))
 	for _, i := range issues {
@@ -141,7 +133,7 @@ func reindent(body string) string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "def ") || strings.HasPrefix(trimmed, "async def ") {
-			if leadingOf(l) == "" {
+			if common.Leading(l) == "" {
 				for i := range lines {
 					if lines[i] != "" {
 						lines[i] = "    " + lines[i]

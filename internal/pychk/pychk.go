@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/sqlchk"
 )
 
@@ -50,7 +51,7 @@ func Check(src string) []Issue {
 		}
 		depth += d
 
-		indent := leading(raw)
+		indent := common.Leading(raw)
 		trimmed := strings.TrimSpace(code)
 
 		// Statement-level analysis only applies when no brackets are open.
@@ -174,15 +175,6 @@ func isBlockOpener(trimmed string) bool {
 		}
 	}
 	return false
-}
-
-func leading(line string) string {
-	for i, r := range line {
-		if r != ' ' && r != '\t' {
-			return line[:i]
-		}
-	}
-	return line
 }
 
 // CheckWithInterpreter runs the real syntax gate: python3's ast.parse over

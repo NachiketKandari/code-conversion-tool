@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 )
 
@@ -81,7 +82,7 @@ func ReplaceQueries(src string, queries []*ir.Query, calls map[string]DBCall) (V
 		start, end := q.StartLine-1, q.EndLine // half-open for copy(out, lines)
 		out = append(out, lines[pos:start]...)
 		call := calls[q.ID]
-		callLine := indentOf(lines[start]) + call.Line()
+		callLine := common.Leading(lines[start]) + call.Line()
 		out = append(out, callLine)
 		pos = end
 
@@ -102,14 +103,4 @@ func ReplaceQueries(src string, queries []*ir.Query, calls map[string]DBCall) (V
 	out = append(out, lines[pos:]...)
 	view.Source = strings.Join(out, "\n")
 	return view, nil
-}
-
-// indentOf returns the leading whitespace run of line.
-func indentOf(line string) string {
-	for i, r := range line {
-		if r != ' ' && r != '\t' {
-			return line[:i]
-		}
-	}
-	return line
 }

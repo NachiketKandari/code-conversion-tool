@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 )
@@ -265,7 +266,7 @@ func Build(opts Options) (*Plan, error) {
 	}
 	ifaceID := fmt.Sprintf("u%02d", len(p.Units)+1)
 	add(Unit{
-		ID: ifaceID, Kind: KindDBInterface, Name: interfaceName(m.Service) + "Store",
+		ID: ifaceID, Kind: KindDBInterface, Name: common.Export(m.Service) + "Store",
 		TargetPath: m.ImportPath("db") + "/interface.go",
 		TemplateID: "db_interface_file",
 		Deps:       dbUnitIDs,
@@ -291,7 +292,7 @@ func Build(opts Options) (*Plan, error) {
 	}
 	ctrlIfaceID := fmt.Sprintf("u%02d", len(p.Units)+1)
 	add(Unit{
-		ID: ctrlIfaceID, Kind: KindControllerInterface, Name: interfaceName(m.Service) + "Controller",
+		ID: ctrlIfaceID, Kind: KindControllerInterface, Name: common.Export(m.Service) + "Controller",
 		TargetPath: m.ImportPath("controller") + "/interface.go",
 		TemplateID: "controller_interface_file",
 		Deps:       ctrlIDs,
@@ -324,7 +325,7 @@ func Build(opts Options) (*Plan, error) {
 			p.Skipped = append(p.Skipped, Skipped{QueryID: "tpcall:" + tp.Service, Reason: "belongs only to unmapped conditions"})
 			continue
 		}
-		name := "TPCall" + camel(tp.Service)
+		name := "TPCall" + common.CamelGo(tp.Service)
 		tpNameSeen[name]++
 		if n := tpNameSeen[name]; n > 1 {
 			name = fmt.Sprintf("%s%d", name, n)
@@ -354,7 +355,7 @@ func Build(opts Options) (*Plan, error) {
 	}
 	handlerIfaceID := fmt.Sprintf("u%02d", len(p.Units)+1)
 	add(Unit{
-		ID: handlerIfaceID, Kind: KindHandlerInterface, Name: interfaceName(m.Service) + "Handler",
+		ID: handlerIfaceID, Kind: KindHandlerInterface, Name: common.Export(m.Service) + "Handler",
 		TargetPath: m.ImportPath("handler") + "/interface.go",
 		TemplateID: "handler_interface_file",
 		Deps:       handlerIDs,
@@ -366,7 +367,7 @@ func Build(opts Options) (*Plan, error) {
 		Deps:       []string{handlerIfaceID},
 	})
 	add(Unit{
-		ID: fmt.Sprintf("u%02d", len(p.Units)+1), Kind: KindMocks, Name: "mockgen " + interfaceName(m.Service) + "Store/" + interfaceName(m.Service) + "Controller",
+		ID: fmt.Sprintf("u%02d", len(p.Units)+1), Kind: KindMocks, Name: "mockgen " + common.Export(m.Service) + "Store/" + common.Export(m.Service) + "Controller",
 		TargetPath: m.ImportPath("db") + "/mock_store.go",
 		TemplateID: "(mockgen)", LLM: false,
 		Deps: []string{ifaceID, ctrlIfaceID},
@@ -382,7 +383,7 @@ func methodName(m *Mapping, q *ir.Query) string {
 		return pin.Name
 	}
 	if q.CursorName != "" {
-		return "Get" + camel(strings.TrimPrefix(q.CursorName, "cur_"))
+		return "Get" + common.CamelGo(strings.TrimPrefix(q.CursorName, "cur_"))
 	}
 	table := "Row"
 	if len(q.Tables) > 0 && q.Tables[0] != "" {
@@ -390,38 +391,19 @@ func methodName(m *Mapping, q *ir.Query) string {
 	}
 	switch q.Type {
 	case ir.QueryInsert:
-		return "Insert" + camel(table)
+		return "Insert" + common.CamelGo(table)
 	case ir.QueryUpdate:
-		return "Update" + camel(table)
+		return "Update" + common.CamelGo(table)
 	case ir.QueryDelete:
-		return "Delete" + camel(table)
+		return "Delete" + common.CamelGo(table)
 	case ir.QueryMerge:
-		return "Merge" + camel(table)
+		return "Merge" + common.CamelGo(table)
 	default:
-		return "Get" + camel(table)
+		return "Get" + common.CamelGo(table)
 	}
 }
 
 // camel turns snake/dotted segments into exported CamelCase (DEMO_ACC_X → DemoAccX).
-func camel(s string) string {
-	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '.' || r == ' ' })
-	var sb strings.Builder
-	for _, p := range parts {
-		if p == "" {
-			continue
-		}
-		r := []rune(strings.ToLower(p))
-		sb.WriteRune([]rune(strings.ToUpper(string(r[0])))[0])
-		sb.WriteString(string(r[1:]))
-	}
-	return sb.String()
-}
-
-func interfaceName(service string) string {
-	r := []rune(service)
-	return strings.ToUpper(string(r[0])) + string(r[1:])
-}
-
 // queriesIn derives a condition's query IDs by line overlap when the
 // inventory's explicit references are absent.
 func queriesIn(f *ir.File, c *ir.Condition) []string {

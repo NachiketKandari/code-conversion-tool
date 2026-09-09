@@ -104,11 +104,11 @@ func (v *Validator) Syntax(path string) Result {
 	}
 	fset := token.NewFileSet()
 	if _, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution); err != nil {
-		res.Errors = append(res.Errors, trimGoErrors(err.Error())...)
+		res.Errors = append(res.Errors, TrimGoErrors(err.Error())...)
 	}
 	formatted, ferr := format.Source(src)
 	if ferr != nil {
-		res.Errors = append(res.Errors, trimGoErrors(ferr.Error())...)
+		res.Errors = append(res.Errors, TrimGoErrors(ferr.Error())...)
 	} else if !strings.HasSuffix(string(src), "\n") || string(formatted) != string(src) {
 		res.Errors = append(res.Errors, path+": not gofmt-clean (run gofmt -w)")
 	}
@@ -156,7 +156,7 @@ func (v *Validator) CompileAll(ctx context.Context) Result {
 	for _, step := range steps {
 		out, err := goCmd(ctx, root, step.args...)
 		if err != nil {
-			res.Errors = append(res.Errors, trimGoErrors(fmt.Sprintf("go %s: %s", step.name, out))...)
+			res.Errors = append(res.Errors, TrimGoErrors(fmt.Sprintf("go %s: %s", step.name, out))...)
 			res.Summary = fmt.Sprintf("go %s failed", step.name)
 			res.OK = false
 			return res
@@ -178,20 +178,17 @@ func goCmd(ctx context.Context, dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// trimGoErrors keeps compiler-shaped lines (file:line:col: …) plus a bounded
-// tail of context, capped so retry prompts stay small (G6).
-func trimGoErrors(out string) []string {
+// TrimGoErrors keeps compiler-shaped lines from a parse/build error,
+// bounded so retry prompts stay small (G6). Exported as the one bounded
+// error-trimmer — the convert path's byte-twin copy was deleted (A3.3).
+func TrimGoErrors(out string) []string {
 	var kept []string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimRight(line, " \t\r")
 		if line == "" {
 			continue
 		}
-		if strings.Contains(line, ":") && !strings.Contains(line, "\t") {
-			kept = append(kept, line)
-		} else {
-			kept = append(kept, line)
-		}
+		kept = append(kept, line)
 		if len(kept) >= 40 {
 			kept = append(kept, "… (output trimmed)")
 			break

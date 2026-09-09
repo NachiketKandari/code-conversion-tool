@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/plan"
 	"github.com/Public/convert-tux-to-go/internal/templates"
@@ -95,7 +96,7 @@ func (s *Service) ControllerPromptContext(endpoint string, p *plan.Plan, storeMe
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "func (s *%s) %s(c context.Context, request *models.%s) (data []*models.%s, err error)\n",
-		lowerFirst(s.Mapping.Service)+"Controller", endpoint, s.requestType(endpoint), s.responseType(endpoint))
+		common.LowerFirst(s.Mapping.Service)+"Controller", endpoint, s.requestType(endpoint), s.responseType(endpoint))
 	sb.WriteString("\ntype " + s.requestType(endpoint) + " struct {\n")
 	sb.WriteString(indentFields(contractFields(c.FmlOps, ir.FmlGet)))
 	sb.WriteString("}\n")
@@ -156,7 +157,7 @@ func indentFields(fields []templates.FieldSpec) string {
 // template-shaped gap.
 func (s *Service) RenderControllerMethod(endpoint, body string) (string, error) {
 	return render(templates.ControllerMethod, templates.ControllerMethodData{
-		StructName:   lowerFirst(s.Mapping.Service) + "Controller",
+		StructName:   common.LowerFirst(s.Mapping.Service) + "Controller",
 		Name:         endpoint,
 		CtxName:      "c",
 		RequestType:  "models." + s.requestType(endpoint),

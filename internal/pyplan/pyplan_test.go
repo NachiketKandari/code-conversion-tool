@@ -1,6 +1,10 @@
 package pyplan
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/Public/convert-tux-to-go/internal/common"
+)
 
 func TestBindIdxOrdering(t *testing.T) {
 	got := bindIdx([]string{"b", "a"}, []string{"a", "b"})
@@ -10,10 +14,10 @@ func TestBindIdxOrdering(t *testing.T) {
 }
 
 func TestCamel(t *testing.T) {
-	if got := Camel("bat_mf_mbm_rt"); got != "BatMfMbmRt" {
+	if got := common.CamelPy("bat_mf_mbm_rt"); got != "BatMfMbmRt" {
 		t.Errorf("Camel = %q", got)
 	}
-	if got := Camel("demo@weird_name"); got != "DemoWeirdName" {
+	if got := common.CamelPy("demo@weird_name"); got != "DemoWeirdName" {
 		t.Errorf("Camel sanitization = %q", got)
 	}
 }
