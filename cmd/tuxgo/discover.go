@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/llm"
@@ -61,7 +61,7 @@ func runDiscover(ctx context.Context, args []string) error {
 			log.Info("AI naming enabled — one call per candidate endpoint, deterministic fallback per failure", "model", mdl.Model)
 		}
 	}
-	bd := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
+	bd := newWiring(ctx, cfg).budget
 
 	_, err = discoverCore(ctx, target, discoverOutDir(*outDir), *stdout, client, bd)
 	return err
@@ -90,11 +90,7 @@ func discoverCore(ctx context.Context, target, out string, stdout bool, client l
 		return 0, fmt.Errorf("no .pc or .pcf files found in %s", target)
 	}
 
-	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
-	if err != nil {
-		log.Warn("audit archive unavailable", "error", err)
-		rec = nil
-	}
+	rec := auditRecorder(ctx)
 
 	written, existing := 0, 0
 	for _, f := range irFiles {
@@ -166,7 +162,7 @@ func discoverOutDir(flagOut string) string {
 	if flagOut != "" {
 		return flagOut
 	}
-	return "mappings"
+	return config.DefaultMappingsDir
 }
 
 // renderDraft emits the mapping draft (DIS-D5): only strict-decodable keys,

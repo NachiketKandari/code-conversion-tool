@@ -9,12 +9,10 @@ package testgen
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -666,17 +664,7 @@ func runServiceMocks(ctx context.Context, svcs []*serviceCtx) {
 
 // archiveSummary persists the run summary into the audit trail (best-effort).
 func archiveSummary(rec *audit.Recorder, res *Result) {
-	if rec == nil {
-		return
-	}
-	data, err := json.MarshalIndent(res, "", "  ")
-	if err != nil {
-		return
-	}
-	_, _ = rec.Write("gentest_summary.json", func(w io.Writer) error {
-		_, werr := w.Write(data)
-		return werr
-	})
+	_, _ = rec.WriteJSON("gentest_summary.json", res) // nil-tolerant
 }
 
 // headerCmds renders the mockgen + coverage header comments for a layer.

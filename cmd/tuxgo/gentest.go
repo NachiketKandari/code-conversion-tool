@@ -2,15 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
-	"github.com/Public/convert-tux-to-go/internal/audit"
-	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
 	"github.com/Public/convert-tux-to-go/internal/testgen"
 	"github.com/Public/convert-tux-to-go/internal/testscan"
@@ -100,22 +97,18 @@ func runGentest(ctx context.Context, args []string) error {
 		base = cfg.Paths.Staged
 	}
 	if base == "" {
-		base = "conversion_logs/_staged"
+		base = config.DefaultStagedDir
 	}
 
 	client := resolveLLMClient(ctx, cfg, *noLLM, "controller gap-fill")
 	llmEnabled := client != nil
 
-	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
-	if err != nil {
-		log.Warn("audit archive unavailable", "error", err)
-		rec = nil
-	}
+	wiring := newWiring(ctx, cfg)
 
 	res, err := testgen.Generate(ctx, tgt, rep, testgen.Options{
 		BaseDir: base, Workers: cfg.Concurrency.Workers, NoLLM: !llmEnabled,
-		Client: client, Budget: budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken),
-		MaxRetries: cfg.ValidateCfg.MaxRetries, Audit: rec,
+		Client: client, Budget: wiring.budget,
+		MaxRetries: cfg.ValidateCfg.MaxRetries, Audit: wiring.audit,
 	})
 	if err != nil {
 		return err
@@ -168,20 +161,7 @@ func layerNames(layers []testscan.Layer) []string {
 // gap report) into the run's audit trail — best-effort, never fatal.
 func archiveGapReport(ctx context.Context, rep *testscan.Report) {
 	log := telemetry.Log(ctx)
-	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
-	if err != nil {
-		log.Warn("audit archive unavailable", "error", err)
-		return
-	}
-	data, err := json.MarshalIndent(rep, "", "  ")
-	if err != nil {
-		log.Warn("gap report marshal failed", "error", err)
-		return
-	}
-	if _, err := rec.Write("gentest_gap_report.json", func(w io.Writer) error {
-		_, werr := w.Write(data)
-		return werr
-	}); err != nil {
+	if _, err := auditRecorder(ctx).WriteJSON("gentest_gap_report.json", rep); err != nil {
 		log.Warn("audit archive write failed", "error", err)
 	}
 }

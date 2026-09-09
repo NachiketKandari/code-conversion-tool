@@ -28,6 +28,24 @@ type Exchange struct {
 	File string `json:"-"`
 }
 
+// WriteJSON marshals v (indent-2) and archives it under name — the one
+// helper for the marshal→Write→warn pattern every command's artifact
+// archive repeated (A5.2). A nil receiver or marshal error is a no-op; the
+// write error is returned.
+func (r *Recorder) WriteJSON(name string, v any) (string, error) {
+	if r == nil {
+		return "", nil
+	}
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("audit: %s: %w", name, err)
+	}
+	return r.Write(name, func(w io.Writer) error {
+		_, werr := w.Write(data)
+		return werr
+	})
+}
+
 // WriteExchange archives one LLM call's full trace and returns the written
 // path. Safe for concurrent callers (Write is mutex-guarded).
 func (r *Recorder) WriteExchange(e Exchange) (string, error) {

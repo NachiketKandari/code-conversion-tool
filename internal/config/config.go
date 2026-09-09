@@ -15,6 +15,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Default artifact-root constants (A5.3): the one home for the literals the
+// cmd ladders re-declared. The config defaults and the no-config fallbacks
+// both read from here, so they cannot drift apart.
+const (
+	DefaultStagedDir   = "conversion_logs/_staged"
+	DefaultBatchpyOut  = "python_out"
+	DefaultMappingsDir = "mappings"
+)
+
 // DefaultPaths mirrors the working-directory layout of
 // configs/.tuxgo.example.yaml. Logs/audit are conventions, not config (see
 // Paths).

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
-	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/cproc/batchflow"
@@ -88,7 +86,7 @@ func runBatchpy(ctx context.Context, args []string) error {
 		out = b.OutDir
 	}
 	if out == "" {
-		out = "python_out"
+		out = config.DefaultBatchpyOut
 	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		return fmt.Errorf("batchpy: create output dir %s: %w", out, err)
@@ -101,13 +99,9 @@ func runBatchpy(ctx context.Context, args []string) error {
 
 	client := resolveLLMClient(ctx, cfg, *noLLM, "batch service bodies")
 	llmEnabled := client != nil
-	bg := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
-
-	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
-	if err != nil {
-		log.Warn("audit archive unavailable", "error", err)
-		rec = nil
-	}
+	wiring := newWiring(ctx, cfg)
+	bg := wiring.budget
+	rec := wiring.audit
 
 	// Per-file worker fan-out (PRD-2026-09-08 BP-2.1): each worker converts
 	// one batch file end-to-end — scan → flow → plan → generate → gates →
@@ -323,7 +317,8 @@ func batchTargets(ctx context.Context, target string, filter string) ([]string, 
 }
 
 // archiveBatchArtifacts writes the module, its plan, and its retention
-// report into the run's audit trail (best-effort, never fatal).
+// report into the run's audit trail (best-effort, never fatal). JSON
+// artifacts go through the shared WriteJSON (nil-receiver tolerated, A5.2).
 func archiveBatchArtifacts(ctx context.Context, rec *audit.Recorder, name string, plan *pyplan.Plan, res pygen.Result) {
 	if rec == nil {
 		return
@@ -335,21 +330,11 @@ func archiveBatchArtifacts(ctx context.Context, rec *audit.Recorder, name string
 	}); err != nil {
 		log.Warn("audit archive write failed", "error", err)
 	}
-	if planBytes, err := json.MarshalIndent(plan, "", "  "); err == nil {
-		if _, err := rec.Write(name+".batchplan.json", func(w io.Writer) error {
-			_, werr := w.Write(planBytes)
-			return werr
-		}); err != nil {
-			log.Warn("audit archive write failed", "error", err)
-		}
+	if _, err := rec.WriteJSON(name+".batchplan.json", plan); err != nil {
+		log.Warn("audit archive write failed", "error", err)
 	}
-	if retBytes, err := json.MarshalIndent(res.Retention, "", "  "); err == nil {
-		if _, err := rec.Write(name+".retention.json", func(w io.Writer) error {
-			_, werr := w.Write(retBytes)
-			return werr
-		}); err != nil {
-			log.Warn("audit archive write failed", "error", err)
-		}
+	if _, err := rec.WriteJSON(name+".retention.json", res.Retention); err != nil {
+		log.Warn("audit archive write failed", "error", err)
 	}
 	if len(res.Notes) > 0 {
 		if _, err := rec.Write(name+".notes.txt", func(w io.Writer) error {

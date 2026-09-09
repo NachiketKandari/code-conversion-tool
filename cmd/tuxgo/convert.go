@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,7 +32,6 @@ import (
 // holds several Tuxedo entry files, one worker converts each service
 // end-to-end in parallel (convert_dir.go), each in its own output subtree.
 func runConvert(ctx context.Context, args []string) error {
-	log := telemetry.Log(ctx)
 	fs := flag.NewFlagSet("convert", flag.ContinueOnError)
 	mappingFlag := fs.String("mapping", "", "User mapping YAML, or a directory of per-service yamls (each with source: <entry file>) when the target dir holds multiple services (default: convert.mapping from config, else the mappings/ convention)")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
@@ -72,22 +69,15 @@ func runConvert(ctx context.Context, args []string) error {
 		return err
 	}
 
-	// Run-wide wiring: one LLM client, budget, validator, and audit
-	// recorder cover every service in the run — the fan-out shares them
-	// (the client is stateless, the budget immutable, the validator a
-	// stateless options holder, the recorder mutex-guarded).
-	b := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
+	// Run-wide wiring: one budget/audit bundle plus the per-purpose client
+	// cover every service in the run (the bundle is immutable/mutex-guarded;
+	// the client is stateless) — A5.2's shared runWiring base.
+	wiring := newWiring(ctx, cfg)
 	v := validate.New(validate.Options{MainGo: cfg.Paths.MainGo, Compile: cfg.ValidateCfg.Compile, RunSmoke: cfg.ValidateCfg.Run})
 	client := resolveLLMClient(ctx, cfg, *noLLM, "controller bodies")
-	llmEnabled := client != nil
-	rec, err := audit.New(auditDir, telemetry.RunIDFromContext(ctx))
-	if err != nil {
-		log.Warn("audit archive unavailable", "error", err)
-		rec = nil
-	}
 	w := &convertWiring{
-		cfg: cfg, budget: b, validator: v, client: client,
-		audit: rec, llmEnabled: llmEnabled,
+		cfg: wiring.cfg, budget: wiring.budget, validator: v, client: client,
+		audit: wiring.audit, llmEnabled: client != nil,
 	}
 
 	baseRoot, degrade := resolveBaseRoot(*baseDir, cfg)
@@ -208,17 +198,8 @@ func convertOneService(ctx context.Context, w *convertWiring, main *ir.File, fil
 	if err != nil {
 		return nil, nil, err
 	}
-	if w.audit != nil {
-		if _, err := w.audit.Write(mapping.Service+"_ledger.json", func(wr io.Writer) error {
-			data, merr := json.MarshalIndent(led, "", "  ")
-			if merr != nil {
-				return merr
-			}
-			_, werr := wr.Write(data)
-			return werr
-		}); err != nil {
-			log.Warn("audit archive write failed", "error", err)
-		}
+	if _, err := w.audit.WriteJSON(mapping.Service+"_ledger.json", led); err != nil {
+		log.Warn("audit archive write failed", "error", err)
 	}
 
 	runMocks(ctx, base, p)

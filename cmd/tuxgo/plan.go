@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
-	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/plan"
@@ -77,8 +76,8 @@ func runPlan(ctx context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("plan: read source %s: %w", main.Path, err)
 	}
-	b := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
-	p, err := plan.Build(plan.Options{Main: main, Source: string(src), FnFiles: files, Mapping: mapping, Budget: b})
+	wiring := newWiring(ctx, cfg)
+	p, err := plan.Build(plan.Options{Main: main, Source: string(src), FnFiles: files, Mapping: mapping, Budget: wiring.budget})
 	if err != nil {
 		return err
 	}

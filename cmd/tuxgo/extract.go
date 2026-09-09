@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -141,7 +140,7 @@ func resolveBatchInput(positional []string, cfg *config.Config) (string, error) 
 
 // defaultMappingsDir is the mapping-draft convention: discover and
 // convert's no-mapping fallback write here; convert resolves it last.
-const defaultMappingsDir = "mappings"
+const defaultMappingsDir = config.DefaultMappingsDir
 
 // mappingFor resolves the endpoint mapping: the -mapping flag wins, else
 // convert.mapping from the yaml, else the mappings/ convention when that
@@ -373,9 +372,7 @@ func archiveIR(ctx context.Context, file *ir.File, name string) error {
 	if err != nil {
 		return err
 	}
-	path, err := rec.Write(name, func(w io.Writer) error {
-		return json.NewEncoder(w).Encode(file)
-	})
+	path, err := rec.WriteJSON(name, file)
 	if err != nil {
 		return err
 	}
