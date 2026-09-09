@@ -178,69 +178,43 @@ func aiNameOne(ctx context.Context, log *slog.Logger, client llm.Client, b budge
 		}
 		fmt.Fprintf(&sb, "%s (%s): %s\n", id, q.Type, oneLine(q.SQL))
 	}
-
 	prompt := sb.String()
-	if err := b.CheckInput(prompt); err != nil {
+
+	// Two attempts (MaxRetries 1), the advisory-seam posture: chat and gate
+	// failures retry, and the deterministic picker takes over on exhaustion.
+	content, _, _, err := llm.RunSeam(ctx, llm.SeamInput{
+		Unit: f.Entry, Kind: "discover", Name: fmt.Sprintf("c%d", cond.Index),
+		Audit: rec, Client: client, Budget: b,
+		MaxRetries:  1,
+		Temperature: 0.2,
+		Prompt: func([]string) (string, []llm.Message) {
+			return prompt, []llm.Message{{Role: "system", Content: aiNameSystem}, {Role: "user", Content: prompt}}
+		},
+		Gate: func(content string) []string {
+			if _, perr := parseNameJSON(content, cond.QueryIDs); perr != nil {
+				return []string{perr.Error()}
+			}
+			return nil
+		},
+	})
+	if err != nil {
 		return aiSuggestion{}, err
 	}
-	record := func(attempt int, response string, err error) {
-		if rec == nil {
-			return
-		}
-		var errs []string
-		outcome := "ok"
-		if err != nil {
-			errs = []string{err.Error()}
-			outcome = "failed"
-		}
-		if _, werr := rec.WriteExchange(audit.Exchange{
-			Unit: f.Entry, Kind: "discover", Name: fmt.Sprintf("c%d", cond.Index), Attempt: attempt,
-			Prompt: prompt, Response: response, Errors: errs, Outcome: outcome,
-		}); werr != nil {
-			log.Warn("audit exchange failed", "candidate", fmt.Sprintf("c%d", cond.Index), "error", werr)
-		}
+	sug, perr := parseNameJSON(content, cond.QueryIDs)
+	if perr != nil {
+		return aiSuggestion{}, perr // unreachable: the gate validated this content
 	}
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		resp, err := client.Chat(ctx, llm.ChatRequest{
-			Model:       "",
-			Messages:    []llm.Message{{Role: "system", Content: aiNameSystem}, {Role: "user", Content: prompt}},
-			Temperature: 0.2,
-		})
-		if err != nil {
-			record(attempt, "", err)
-			lastErr = err
-			continue
-		}
-		if err := b.CheckOutput(resp.Content); err != nil {
-			record(attempt, resp.Content, err)
-			lastErr = err
-			continue
-		}
-		sug, perr := parseNameJSON(resp.Content, cond.QueryIDs)
-		if perr != nil {
-			record(attempt, resp.Content, perr)
-			lastErr = perr
-			continue
-		}
-		record(attempt, resp.Content, nil)
-		log.Debug("ai naming proposal", "condition", cond.Index, "name", sug.Name)
-		return sug, nil
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("no response")
-	}
-	return aiSuggestion{}, lastErr
+	log.Debug("ai naming proposal", "condition", cond.Index, "name", sug.Name)
+	return sug, nil
 }
 
 // parseNameJSON extracts the JSON object from the model output (fence- or
-// prose-tolerant: the first '{' to the last '}') and validates every field —
+// prose-tolerant via llm.JSONObject) and validates every field —
 // identifiers must be valid Go identifiers, routes must start with /, and
 // only query ids the branch actually references are accepted.
 func parseNameJSON(content string, allowedQueryIDs []string) (aiSuggestion, error) {
-	start := strings.Index(content, "{")
-	end := strings.LastIndex(content, "}")
-	if start < 0 || end <= start {
+	obj := llm.JSONObject(content)
+	if obj == "" {
 		return aiSuggestion{}, fmt.Errorf("no JSON object in the response")
 	}
 	var raw struct {
@@ -252,7 +226,7 @@ func parseNameJSON(content string, allowedQueryIDs []string) (aiSuggestion, erro
 			Row  string `json:"row"`
 		} `json:"dbMethods"`
 	}
-	if err := json.Unmarshal([]byte(content[start:end+1]), &raw); err != nil {
+	if err := json.Unmarshal([]byte(obj), &raw); err != nil {
 		return aiSuggestion{}, fmt.Errorf("parsing naming JSON: %w", err)
 	}
 	sug := aiSuggestion{Methods: map[string]methodPinSuggestion{}}

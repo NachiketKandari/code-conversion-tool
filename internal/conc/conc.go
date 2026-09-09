@@ -1,13 +1,14 @@
-package main
+// Package conc is the concurrency kernel: the bounded-index fan-out pool
+// shared by every fan-out site (convert's DB renders and per-service dir
+// workers, batchpy's per-file workers, gentest's per-function pool).
+package conc
 
 import "sync"
 
-// runIndexed runs fn(i) for i in [0, n) on a bounded worker pool and waits.
+// RunIndexed runs fn(i) for i in [0, n) on a bounded worker pool and waits.
 // Callers own their result slices (indexed by i), so output order always
 // matches input order — workers=1 stays byte-identical to a sequential run.
-// This is the shared fan-out seam of convert's per-service workers and
-// batchpy's per-file workers.
-func runIndexed(n, workers int, fn func(i int)) {
+func RunIndexed(n, workers int, fn func(i int)) {
 	if workers < 1 {
 		workers = 1
 	}

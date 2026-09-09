@@ -20,11 +20,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/conc"
 	"github.com/Public/convert-tux-to-go/internal/gen"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
@@ -141,18 +141,9 @@ func Generate(ctx context.Context, tgt *testscan.Target, rep *testscan.Report, o
 	// Per-function worker pool: units are independent; results merge in
 	// input order so workers=1 and workers=N produce identical bytes.
 	blocks := make([]*block, len(units))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, opts.Workers)
-	for i, u := range units {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int, u *unit) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			blocks[i] = renderUnit(ctx, u, opts)
-		}(i, u)
-	}
-	wg.Wait()
+	conc.RunIndexed(len(units), opts.Workers, func(i int) {
+		blocks[i] = renderUnit(ctx, units[i], opts)
+	})
 
 	for _, b := range blocks {
 		if b == nil {

@@ -65,6 +65,41 @@ func TestChatNonStream(t *testing.T) {
 	}
 }
 
+// TestChatEndpointDefaultsFillGaps pins the A1.5 contract: request-level
+// values win; a zero request Temperature/MaxTokens inherits the endpoint's
+// config defaults (run.temperature / models[].requestOptions).
+func TestChatEndpointDefaultsFillGaps(t *testing.T) {
+	srv := NewFakeServer(FakeResponse{Content: "ok"})
+	defer srv.Close()
+
+	ep := endpoint(srv.URL)
+	ep.Temperature = 0.42
+	ep.MaxTokens = 256
+	c := New(ep)
+	if _, err := c.Chat(context.Background(), ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	req := srv.Requests[0]
+	if req["temperature"] != 0.42 || req["max_tokens"] != float64(256) {
+		t.Fatalf("endpoint defaults not applied: %v", req)
+	}
+
+	// Request-level values still win over the endpoint's.
+	if _, err := c.Chat(context.Background(), ChatRequest{
+		Messages:    []Message{{Role: "user", Content: "hi"}},
+		Temperature: 0.1,
+		MaxTokens:   128,
+	}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	req = srv.Requests[1]
+	if req["temperature"] != 0.1 || req["max_tokens"] != float64(128) {
+		t.Fatalf("request values must win: %v", req)
+	}
+}
+
 func TestChatKeylessOmitsAuthHeader(t *testing.T) {
 	srv := NewFakeServer()
 	defer srv.Close()

@@ -214,11 +214,22 @@ func (c *openaiClient) payload(req ChatRequest) chatCompletionPayload {
 		// Model empty to follow the routed config (OpenRouter 400s without it).
 		model = c.endpoint.Model
 	}
+	// Request-level values win; the endpoint's config defaults fill the
+	// gaps (run.temperature / models[].requestOptions in .tuxgo.yaml).
+	// Stream stays request-owned: Chat pins it false, Stream pins it true.
+	temperature := req.Temperature
+	if temperature == 0 {
+		temperature = c.endpoint.Temperature
+	}
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = c.endpoint.MaxTokens
+	}
 	p := chatCompletionPayload{
 		Model:       model,
 		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+		Temperature: temperature,
+		MaxTokens:   maxTokens,
 		Stream:      req.Stream,
 	}
 	if req.Stream {

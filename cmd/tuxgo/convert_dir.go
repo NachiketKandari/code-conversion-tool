@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/conc"
 	"github.com/Public/convert-tux-to-go/internal/convert"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/ledger"
@@ -63,7 +64,7 @@ func runConvertFanout(ctx context.Context, w *convertWiring, target string, main
 	log.Info("convert dir fan-out", "target", target, "services", len(mains),
 		"workers", workers, "mapping_dir", mappingPath)
 	results := make([]serviceOutcome, len(mains))
-	runIndexed(len(mains), workers, func(i int) {
+	conc.RunIndexed(len(mains), workers, func(i int) {
 		main := mains[i]
 		mapping := mappings[i]
 		// Per-service output isolation: its own subtree keeps the

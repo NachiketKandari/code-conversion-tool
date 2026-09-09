@@ -16,10 +16,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/conc"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/gen"
@@ -257,6 +257,9 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 // controllerBody assembles the controller unit's prompt (rewritten branch +
 // DB signatures + FML contract, never raw SQL), calls the LLM with bounded
 // retries feeding trimmed validation errors, and returns the accepted body.
+// The retry/budget/audit skeleton is the shared llm.RunSeam; convert's
+// per-seam policy (retry through chat errors, the separate validation-
+// feedback message) stays local.
 func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Service, u plan.Unit, dbContract string) (body, prompt string, err error) {
 	c := svc.ConditionOf(u.Name)
 	if c == nil {
@@ -285,57 +288,45 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 		draft = flowDraft(opts, svc, c)
 	}
 	prompt = buildPrompt(view, dbContract, contract, u.Name, draft)
-
-	if err := opts.Budget.CheckInput(prompt); err != nil {
-		return "", "", fmt.Errorf("convert: %w — trim the mapping or raise run.maxPromptTokens", err)
-	}
-
-	e := opts.Ledger.Get(u.ID, string(u.Kind), u.Name)
-	var lastErrs []string
-	for attempt := 0; attempt <= opts.MaxRetries; attempt++ {
-		e.Attempts++
-		messages := []llm.Message{
+	messages := func(notes []string) []llm.Message {
+		msgs := []llm.Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: prompt},
 		}
-		if len(lastErrs) > 0 {
-			messages = append(messages, llm.Message{
+		if len(notes) > 0 {
+			msgs = append(msgs, llm.Message{
 				Role:    "user",
-				Content: "Your previous output failed validation:\n" + strings.Join(lastErrs, "\n") + "\nFix these errors and emit only the corrected method body.",
+				Content: "Your previous output failed validation:\n" + strings.Join(notes, "\n") + "\nFix these errors and emit only the corrected method body.",
 			})
 		}
-		response, cerr := opts.Client.Chat(ctx, llm.ChatRequest{
-			Model:       "", // endpoint default (resolved by the client's wiring)
-			Messages:    messages,
-			Temperature: 0.1,
-		})
-		res.LLMCalls++
-		if cerr != nil {
-			lastErrs = []string{cerr.Error()}
-			recordAttempt(ctx, opts, u, attempt, prompt, "", lastErrs)
-			continue
-		}
-		if oerr := opts.Budget.CheckOutput(response.Content); oerr != nil {
-			lastErrs = []string{oerr.Error()}
-			recordAttempt(ctx, opts, u, attempt, prompt, response.Content, lastErrs)
-			continue
-		}
-		body = cleanBody(response.Content)
-		if verr := validateBody(opts, body); len(verr) > 0 {
-			lastErrs = verr
-			recordAttempt(ctx, opts, u, attempt, prompt, response.Content, verr)
-			continue
-		}
-		if verr := requiredCallErrs(view.Source, body); len(verr) > 0 {
-			lastErrs = verr
-			recordAttempt(ctx, opts, u, attempt, prompt, response.Content, verr)
-			continue
-		}
-		recordAttempt(ctx, opts, u, attempt, prompt, response.Content, nil)
-		opts.Ledger.Set(u.ID, ledger.StatusValidated, "")
-		return body, prompt, nil
+		return msgs
 	}
-	return "", prompt, fmt.Errorf("validation failed after %d attempts: %s", opts.MaxRetries+1, strings.Join(lastErrs, "; "))
+	accepted, chatCalls, notes, err := llm.RunSeam(ctx, llm.SeamInput{
+		Unit: u.ID, Kind: string(u.Kind), Name: u.Name,
+		Template: u.TemplateID, LLM: u.LLM,
+		Audit: opts.Audit, Client: opts.Client, Budget: opts.Budget, MaxRetries: opts.MaxRetries,
+		Temperature: 0.1,
+		Prompt: func(attemptNotes []string) (string, []llm.Message) {
+			return prompt, messages(attemptNotes)
+		},
+		Extract: cleanBody,
+		Gate: func(body string) []string {
+			verr := validateBody(opts, body)
+			return append(verr, requiredCallErrs(view.Source, body)...)
+		},
+	})
+	res.LLMCalls += chatCalls
+	opts.Ledger.Get(u.ID, string(u.Kind), u.Name).Attempts += chatCalls
+	if err != nil {
+		if chatCalls == 0 {
+			// The prompt was rejected before any chat call: over the input
+			// ceiling — a wiring problem, not a validation failure.
+			return "", prompt, fmt.Errorf("convert: %w — trim the mapping or raise run.maxPromptTokens", err)
+		}
+		return "", prompt, fmt.Errorf("validation failed after %d attempts: %s", chatCalls, strings.Join(notes, "; "))
+	}
+	opts.Ledger.Set(u.ID, ledger.StatusValidated, "")
+	return accepted, prompt, nil
 }
 
 const systemPrompt = `You convert one legacy Pro*C/Tuxedo branch into the body of a Go controller method.
@@ -623,34 +614,6 @@ func dbSignatures(p *plan.Plan, bodies map[string]dbOut) string {
 	return strings.Join(lines, "\n")
 }
 
-// recordAttempt writes the unit's audit record (§4.7): template, prompt,
-// raw response, validation outcome — via the shared audit.Exchange so every
-// LLM seam archives the same shape. Best-effort.
-func recordAttempt(ctx context.Context, opts Options, u plan.Unit, attempt int, prompt, response string, errs []string) {
-	if opts.Audit == nil {
-		return
-	}
-	outcome := "ok"
-	if len(errs) > 0 {
-		outcome = "failed"
-	}
-	if _, err := opts.Audit.WriteExchange(audit.Exchange{
-		Unit:     u.ID,
-		Kind:     string(u.Kind),
-		Name:     u.Name,
-		Attempt:  attempt,
-		Template: u.TemplateID,
-		LLM:      u.LLM,
-		Prompt:   prompt,
-		Response: response,
-		Errors:   errs,
-		Outcome:  outcome,
-		File:     fmt.Sprintf("unit-%s-attempt%d.json", u.ID, attempt),
-	}); err != nil {
-		telemetry.Log(ctx).Warn("audit record failed", "unit", u.ID, "error", err)
-	}
-}
-
 // --- helpers ---
 
 // renderDBUnits renders every DB unit through a bounded worker pool.
@@ -661,23 +624,14 @@ func recordAttempt(ctx context.Context, opts Options, u plan.Unit, attempt int, 
 func renderDBUnits(svc *gen.Service, units []plan.Unit, workers int) (map[string]dbOut, error) {
 	out := make([]dbOut, len(units))
 	errs := make([]error, len(units))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, workers)
-	for i := range units {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(i int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			body, sig, _, err := svc.DBMethod(units[i])
-			if err != nil {
-				errs[i] = err
-				return
-			}
-			out[i] = dbOut{body, sig}
-		}(i)
-	}
-	wg.Wait()
+	conc.RunIndexed(len(units), workers, func(i int) {
+		body, sig, _, err := svc.DBMethod(units[i])
+		if err != nil {
+			errs[i] = err
+			return
+		}
+		out[i] = dbOut{body, sig}
+	})
 	for _, err := range errs {
 		if err != nil {
 			return nil, err
@@ -691,10 +645,7 @@ func renderDBUnits(svc *gen.Service, units []plan.Unit, workers int) (map[string
 }
 
 func (o Options) workerCount() int {
-	if o.Workers < 1 {
-		return 1
-	}
-	return o.Workers
+	return max(o.Workers, 1)
 }
 
 func unitsOf(p *plan.Plan, k plan.Kind) []plan.Unit {
