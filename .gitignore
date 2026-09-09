@@ -17,9 +17,9 @@ tux/
 batchExamples/
 # batchpy generated modules (derived from the gitignored corpus)
 python_out/
-# real-service corpus: original .pc sources + their nav reference conversions
+# real-service corpus: original .pc sources + their nav reference conversions + generic snippets (local only)
 tuxExamples/
-examples/nav/
+examples/
 conversion_logs/
 /tuxgo
 .tuxgo.yaml
