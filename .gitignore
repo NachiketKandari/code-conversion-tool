@@ -30,9 +30,10 @@ conversion_logs/
 nav.mapping.yaml
 .tuxgo/
 
-# Docs stay local (PRDs/design notes are not part of the code commit) — README ships
+# Docs stay local (PRDs/design notes are not part of the code commit) — the root
+# README ships (anchored, so docs/ or prd/ readmes stay local)
 *.md
-!README.md
+!/README.md
 
 # Editors / OS
 .DS_Store
