@@ -58,7 +58,7 @@ func runFlow(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("flow: read %s: %w", f.Path, err)
 		}
-		facts, err := scanLikeExtract(src, f)
+		facts, err := flow.ScanForIR(string(src), f)
 		if err != nil {
 			return fmt.Errorf("flow: scan %s: %w", f.Path, err)
 		}
@@ -87,16 +87,6 @@ func runFlow(ctx context.Context, args []string) error {
 	}
 	log.Info("flow analysis complete", "files", len(report.Files))
 	return nil
-}
-
-// scanLikeExtract scans the source the way the extraction path did: a
-// fragment file (no entry function — a lone block/branch, PRD PF-3) is
-// wrapped by ScanFragment so the __fragment function def and rebased line
-// numbers exist; otherwise the plain scan applies. Without this, flow/
-// discover on a fragment file see no function body and report an empty
-// tree even though the IR is complete.
-func scanLikeExtract(src []byte, f *ir.File) (*scanner.SourceFacts, error) {
-	return flow.ScanForIR(string(src), f)
 }
 
 // extractFlowIR resolves the target (file or directory) through the

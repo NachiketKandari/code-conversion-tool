@@ -185,7 +185,7 @@ func Build(flow *batchflow.Flow, opts Options) *Plan {
 		p.Repo = append(p.Repo, RepoMethod{
 			Name: dname, Kind: verbOf(g.DML.Type), QueryKind: string(g.DML.Type),
 			Consts: []string{p.constByQuery[g.DML.ID]}, Binds: bindOrder(g.DML.SQL),
-			InLoop: inLoops(flow.Loops, g.DML.StartLine), SrcLine: g.DML.StartLine,
+			InLoop: batchflow.InLoop(flow.Loops, g.DML.StartLine), SrcLine: g.DML.StartLine,
 		})
 		p.callByQuery[g.DML.ID] = dname
 	}
@@ -214,15 +214,6 @@ func Build(flow *batchflow.Flow, opts Options) *Plan {
 		p.callByQuery[q.ID] = m.Name
 	}
 	return p
-}
-
-func inLoops(loops []batchflow.Loop, line int) bool {
-	for _, l := range loops {
-		if line >= l.StartLine && line <= l.EndLine {
-			return true
-		}
-	}
-	return false
 }
 
 // ConstName returns the SQL constant backing an IR query id.

@@ -103,18 +103,19 @@ func Build(opts Options) (*Plan, error) {
 		condBy[opts.Main.Conditions[i].Index] = &opts.Main.Conditions[i]
 	}
 	// Discovery resolution (PRD-2026-09-10): conditionRef endpoints resolve
-	// through the flow tree, built lazily and at most once.
+	// through the flow tree, built lazily and at most once (flow.TreeFor is
+	// the shared derivation; plan's policy is to hard-error).
 	var flowTree *flow.Tree
 	condRef := func(ref string) (*ir.Condition, error) {
 		if flowTree == nil {
 			if strings.TrimSpace(opts.Source) == "" {
 				return nil, fmt.Errorf("plan: endpoint references candidate %s but no source is available to re-derive the flow tree", ref)
 			}
-			facts, err := flow.ScanForIR(opts.Source, opts.Main)
+			t, err := flow.TreeFor(opts.Source, opts.Main)
 			if err != nil {
 				return nil, fmt.Errorf("plan: flow tree for candidate %s: %w", ref, err)
 			}
-			flowTree = flow.Build([]byte(opts.Source), facts, opts.Main.Entry, opts.Main)
+			flowTree = t
 		}
 		c, err := flow.ConditionFor(flowTree, opts.Main.Conditions, ref)
 		if err != nil {

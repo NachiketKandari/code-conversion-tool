@@ -295,9 +295,8 @@ func firstLine(s string) string {
 // goLitRHS cleans a C literal right-hand side for the draft: char literals
 // become Go strings; anything else passes through untouched.
 func goLitRHS(s string) string {
-	t := strings.TrimSpace(s)
-	if len(t) >= 3 && t[0] == '\'' && t[len(t)-1] == '\'' {
-		return `"` + t[1:len(t)-1] + `"`
+	if v, ok := charLitToGo(s); ok {
+		return v
 	}
 	return s
 }
@@ -319,9 +318,10 @@ func leadingCall(text string) (string, bool) {
 	return "", false
 }
 
-// splitAssign splits the first top-level assignment into lhs/rhs with casts
-// stripped, for the conservative `lhs := rhs` draft.
-func splitAssign(text string) (lhs, rhs string) {
+// topLevelAssignIndex returns the byte index of the first top-level
+// assignment '=' — outside ==, !=, <=, >= and outside parens/brackets —
+// or -1. One scanner for both the boolean test and the split.
+func topLevelAssignIndex(text string) int {
 	depth := 0
 	for i := 0; i < len(text); i++ {
 		switch text[i] {
@@ -336,15 +336,25 @@ func splitAssign(text string) (lhs, rhs string) {
 		case '=':
 			if depth == 0 && i > 0 && !strings.ContainsRune("=!<>+-*/%&|^", rune(text[i-1])) &&
 				(i+1 >= len(text) || text[i+1] != '=') {
-				lhs = strings.TrimSpace(text[:i])
-				rhs = strings.TrimSpace(text[i+1:])
-				lhs = strings.TrimSuffix(lhs, ";")
-				rhs = strings.TrimSuffix(rhs, ";")
-				return stripCasts(lhs), stripCasts(rhs)
+				return i
 			}
 		}
 	}
-	return text, ""
+	return -1
+}
+
+// splitAssign splits the first top-level assignment into lhs/rhs with casts
+// stripped, for the conservative `lhs := rhs` draft.
+func splitAssign(text string) (lhs, rhs string) {
+	i := topLevelAssignIndex(text)
+	if i < 0 {
+		return text, ""
+	}
+	lhs = strings.TrimSpace(text[:i])
+	rhs = strings.TrimSpace(text[i+1:])
+	lhs = strings.TrimSuffix(lhs, ";")
+	rhs = strings.TrimSuffix(rhs, ";")
+	return stripCasts(lhs), stripCasts(rhs)
 }
 
 // stripCasts removes C cast expressions (`(char *)`, `(FBFR32*)`).
@@ -417,12 +427,21 @@ func exprGo(e *pred.Expr) string {
 	}
 }
 
-// goLit maps C literals to Go: char literals become strings, numbers pass.
-func goLit(t string) string {
+// charLitToGo maps a C char literal ('x') to a Go string literal ("x").
+func charLitToGo(t string) (string, bool) {
 	t = strings.TrimSpace(t)
 	if len(t) >= 3 && t[0] == '\'' && t[len(t)-1] == '\'' {
-		return `"` + t[1:len(t)-1] + `"`
+		return `"` + t[1:len(t)-1] + `"`, true
 	}
+	return "", false
+}
+
+// goLit maps C literals to Go: char literals become strings, numbers pass.
+func goLit(t string) string {
+	if v, ok := charLitToGo(t); ok {
+		return v
+	}
+	t = strings.TrimSpace(t)
 	if t == "" {
 		return ""
 	}

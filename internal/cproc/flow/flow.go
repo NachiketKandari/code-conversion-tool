@@ -168,6 +168,19 @@ func ScanForIR(src string, f *ir.File) (*scanner.SourceFacts, error) {
 	return scanner.ScanBytes([]byte(src), f.Path)
 }
 
+// TreeFor scans source the way the extraction path did (ScanForIR — a
+// fragment wraps via ScanFragment) and builds the entry function's flow
+// tree. This is the one home for consumers re-deriving a tree from an
+// ir.File (plan, gen, convert, the flow command); each caller keeps its own
+// memo and failure policy (AD8): plan hard-errors, gen/convert degrade.
+func TreeFor(src string, f *ir.File) (*Tree, error) {
+	facts, err := ScanForIR(src, f)
+	if err != nil {
+		return nil, err
+	}
+	return Build([]byte(src), facts, f.Entry, f), nil
+}
+
 // pickFunction resolves the function to build: the named function, the
 // fragment's synthesized pseudo-function, or a single-function file.
 func pickFunction(facts *scanner.SourceFacts, fn string) (*scanner.FunctionDef, string) {
@@ -330,7 +343,7 @@ func residualRun(code []string, from, to, sig int, fn string, facts *scanner.Sou
 	sub := SubExpr
 	if hasTopLevelAssign(joined) {
 		sub = SubAssign
-	} else if containsCall(joined) {
+	} else if _, isCall := leadingCall(joined); isCall {
 		sub = SubCall
 	}
 	run := &Node{Kind: KindStmt, Sub: sub, Line: from, EndLine: to, Text: joined}
@@ -410,42 +423,7 @@ func stripComments(line string) string {
 // hasTopLevelAssign reports whether the text contains an assignment '='
 // outside ==, !=, <=, >= and outside parens/brackets.
 func hasTopLevelAssign(text string) bool {
-	depth := 0
-	for i := 0; i < len(text); i++ {
-		switch text[i] {
-		case '(', '[', '{':
-			depth++
-		case ')', ']', '}':
-			depth--
-		case '"', '\'':
-			q := text[i]
-			for i++; i < len(text) && text[i] != q; i++ {
-			}
-		case '=':
-			if depth == 0 && i > 0 && !strings.ContainsRune("=!<>+-*/%&|^", rune(text[i-1])) &&
-				(i+1 >= len(text) || text[i+1] != '=') {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// containsCall reports whether the text looks like a function invocation.
-func containsCall(text string) bool {
-	for i := 0; i < len(text); i++ {
-		if isIdentStartByte(text[i]) {
-			j := i
-			for j < len(text) && isIdentByte(text[j]) {
-				j++
-			}
-			if j < len(text) && text[j] == '(' {
-				return true
-			}
-			i = j
-		}
-	}
-	return false
+	return topLevelAssignIndex(text) >= 0
 }
 
 func isIdentStartByte(b byte) bool {

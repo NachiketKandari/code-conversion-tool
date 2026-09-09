@@ -315,18 +315,19 @@ func (s *Service) ModelFile(p *plan.Plan) (string, error) {
 func (s *Service) conditionOf(e plan.Endpoint) *ir.Condition {
 	if e.ConditionRef != "" {
 		// Discovery candidate (PRD-2026-09-10): re-derive the synthesized
-		// condition from the flow tree. Degrade to nil (caller skips the
-		// endpoint's structs) on any failure — the plan already validated
-		// the ref, so this is defensive only.
+		// condition from the flow tree (the shared flow.TreeFor derivation).
+		// Degrade to nil (caller skips the endpoint's structs) on any
+		// failure — the plan already validated the ref, so this is
+		// defensive only.
 		if s.flowTree == nil {
 			if strings.TrimSpace(s.source) == "" {
 				return nil
 			}
-			facts, err := flow.ScanForIR(s.source, s.Main)
+			t, err := flow.TreeFor(s.source, s.Main)
 			if err != nil {
 				return nil
 			}
-			s.flowTree = flow.Build([]byte(s.source), facts, s.Main.Entry, s.Main)
+			s.flowTree = t
 		}
 		c, err := flow.ConditionFor(s.flowTree, s.Main.Conditions, e.ConditionRef)
 		if err != nil {

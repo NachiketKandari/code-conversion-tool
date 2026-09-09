@@ -109,11 +109,6 @@ func Generate(ctx context.Context, opts Options) (Result, error) {
 		secs = append(secs, banner("Service Layer"))
 		secs = append(secs, svc...)
 	} else {
-		secs = append(secs, banner("Repository (deterministic scaffold — BP-3)"))
-		var blocks []string
-		for _, m := range p.Repo {
-			blocks = append(blocks, renderRepoMethod(p, m))
-		}
 		body := placeholderBody(p.Entrypoint)
 		if !opts.NoLLM && opts.Client != nil {
 			filled, calls, notes, err := fillServiceBody(ctx, opts)
@@ -129,15 +124,7 @@ func Generate(ctx context.Context, opts Options) (Result, error) {
 			res.Notes = append(res.Notes, "no llm client available — placeholder body emitted")
 		}
 		serviceBody = body
-		if strings.HasPrefix(strings.TrimSpace(body), "class ") {
-			secs = append(secs, strings.TrimRight(strings.TrimSpace(body), "\n"))
-		} else {
-			secs = append(secs, render(templates.PyBatchServiceShell, serviceShellData{
-				RepoName: p.RepoName, ClassName: p.ClassName, ServiceName: p.ServiceName,
-				SourcePath: opts.SourcePath, RouterClass: p.Wrapper.RouterClass,
-				RepoBlocks: strings.Join(blocks, "\n\n"), Body: body,
-			}))
-		}
+		secs = append(secs, repoSection(p, opts.SourcePath, body))
 	}
 
 	res.Content = strings.Join(secs, "\n\n") + "\n"
@@ -153,6 +140,44 @@ func Generate(ctx context.Context, opts Options) (Result, error) {
 	res.Fidelity = fidelityOf(p, res.Content)
 	res.Retention = retentionOf(p, res.Content, serviceBody, res.Fidelity, res.LLMCalls, res.Structure, res.PyOK, res.PyMode, res.LLMFilled)
 	return res, nil
+}
+
+// repoSection renders the repository banner + deterministic repo methods +
+// the service body (class passthrough or shell) — the tail section of every
+// repo-shape module. Generate and assembleModule (the seam gate's view)
+// share it, so the structural gate always sees the exact bytes that would
+// be written (A2.4: the one assembly).
+func repoSection(p *pyplan.Plan, sourcePath, body string) string {
+	var secs []string
+	secs = append(secs, banner("Repository (deterministic scaffold — BP-3)"))
+	var blocks []string
+	for _, m := range p.Repo {
+		blocks = append(blocks, renderRepoMethod(p, m))
+	}
+	if strings.HasPrefix(strings.TrimSpace(body), "class ") {
+		secs = append(secs, strings.TrimRight(strings.TrimSpace(body), "\n"))
+	} else {
+		secs = append(secs, render(templates.PyBatchServiceShell, serviceShellData{
+			RepoName: p.RepoName, ClassName: p.ClassName, ServiceName: p.ServiceName,
+			SourcePath: sourcePath, RouterClass: p.Wrapper.RouterClass,
+			RepoBlocks: strings.Join(blocks, "\n\n"), Body: body,
+		}))
+	}
+	return strings.Join(secs, "\n\n")
+}
+
+// assembleModule builds the full repo-shape module with one service body —
+// the seam gate's view of what Generate would write (the same repoSection
+// the write path uses).
+func assembleModule(p *pyplan.Plan, sourcePath, body string) string {
+	var secs []string
+	secs = append(secs, renderHeader(p, sourcePath))
+	secs = append(secs, banner("SQL Query Constants (source fidelity-gated via sqlchk)"))
+	for _, c := range p.Consts {
+		secs = append(secs, render(templates.PyBatchConst, constData{Name: c.Name, SQL: c.SQL}))
+	}
+	secs = append(secs, repoSection(p, sourcePath, body))
+	return strings.Join(secs, "\n\n") + "\n"
 }
 
 // interpreterGate upgrades the structural gate with python3's ast.parse when

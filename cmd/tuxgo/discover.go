@@ -106,7 +106,7 @@ func discoverCore(ctx context.Context, target, out string, stdout bool, client l
 		if err != nil {
 			return written, fmt.Errorf("discover: read %s: %w", f.Path, err)
 		}
-		facts, err := scanLikeExtract(src, f)
+		facts, err := flow.ScanForIR(string(src), f)
 		if err != nil {
 			return written, fmt.Errorf("discover: scan %s: %w", f.Path, err)
 		}

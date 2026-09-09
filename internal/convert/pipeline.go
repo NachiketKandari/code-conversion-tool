@@ -363,15 +363,15 @@ func flowDraft(opts Options, svc *gen.Service, c *ir.Condition) string {
 	return strings.TrimRight(out.Body, "\n")
 }
 
-// flowTreeOf scans source the way the extraction path did (fragments wrap
-// via ScanFragment) and builds the entry function's flow tree; any failure
-// yields an empty tree, never a panic.
+// flowTreeOf re-derives the entry function's flow tree via the shared
+// flow.TreeFor (fragments wrap via ScanFragment there); any failure yields
+// an empty tree, never a panic.
 func flowTreeOf(src string, f *ir.File) *flow.Tree {
-	facts, err := flow.ScanForIR(src, f)
+	t, err := flow.TreeFor(src, f)
 	if err != nil {
 		return &flow.Tree{}
 	}
-	return flow.Build([]byte(src), facts, f.Entry, f)
+	return t
 }
 
 // planResolver adapts the plan's store calls and row names to the flow

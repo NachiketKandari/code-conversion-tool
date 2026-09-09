@@ -8,7 +8,6 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/pychk"
 	"github.com/Public/convert-tux-to-go/internal/pyplan"
-	"github.com/Public/convert-tux-to-go/internal/templates"
 )
 
 // fillServiceBody is the BP-6 LLM seam: the service orchestration body for
@@ -39,7 +38,7 @@ func fillServiceBody(ctx context.Context, opts Options) (body string, calls int,
 			return reindent(llm.ExtractFenced(content, "python"))
 		},
 		Gate: func(serviceBody string) []string {
-			content := assembleWithBody(p, opts.SourcePath, serviceBody)
+			content := assembleModule(p, opts.SourcePath, serviceBody)
 			issues := check(content)
 			issues = append(issues, txnIssues(content)...)
 			issues = append(issues, seamIssues(serviceBody)...)
@@ -111,33 +110,6 @@ func userPrompt(p *pyplan.Plan, opts Options, notes []string) string {
 		sb.WriteString("\n```c\n" + b.View + "\n```\n")
 	}
 	return sb.String()
-}
-
-// assembleWithBody rebuilds the full module with a candidate service body —
-// the same assembly Generate performs, so the structural gate sees the exact
-// bytes that would be written.
-func assembleWithBody(p *pyplan.Plan, sourcePath, body string) string {
-	var secs []string
-	secs = append(secs, renderHeader(p, sourcePath))
-	secs = append(secs, banner("SQL Query Constants (source fidelity-gated via sqlchk)"))
-	for _, c := range p.Consts {
-		secs = append(secs, render(templates.PyBatchConst, constData{Name: c.Name, SQL: c.SQL}))
-	}
-	secs = append(secs, banner("Repository (deterministic scaffold — BP-3)"))
-	var blocks []string
-	for _, m := range p.Repo {
-		blocks = append(blocks, renderRepoMethod(p, m))
-	}
-	if strings.HasPrefix(strings.TrimSpace(body), "class ") {
-		secs = append(secs, strings.TrimRight(strings.TrimSpace(body), "\n"))
-	} else {
-		secs = append(secs, render(templates.PyBatchServiceShell, serviceShellData{
-			RepoName: p.RepoName, ClassName: p.ClassName, ServiceName: p.ServiceName,
-			SourcePath: sourcePath, RouterClass: p.Wrapper.RouterClass,
-			RepoBlocks: strings.Join(blocks, "\n\n"), Body: body,
-		}))
-	}
-	return strings.Join(secs, "\n\n") + "\n"
 }
 
 func leadingOf(line string) string {

@@ -115,7 +115,7 @@ func Build(f *ir.File, facts *scanner.SourceFacts, src string) *Flow {
 		ServiceName: serviceName(facts, body, f.Path),
 	}
 	lines := strings.Split(src, "\n")
-	flow.Loops = findLoops(lines, facts, flow.BodyStart, flow.BodyEnd)
+	flow.Loops = findLoops(lines, facts, entry, flow.BodyStart, flow.BodyEnd)
 
 	for _, q := range f.UniqueQueries() {
 		if q.StartLine >= flow.BodyStart && q.StartLine <= flow.BodyEnd {
@@ -164,14 +164,14 @@ func Build(f *ir.File, facts *scanner.SourceFacts, src string) *Flow {
 		if g := claimed[c]; g != nil {
 			flow.CursorGroups = append(flow.CursorGroups, g)
 		} else {
-			flow.Steps = append(flow.Steps, &Step{Query: c, InLoop: inLoop(flow.Loops, c.StartLine)})
+			flow.Steps = append(flow.Steps, &Step{Query: c, InLoop: InLoop(flow.Loops, c.StartLine)})
 		}
 	}
 	for _, q := range flow.Queries {
 		if q.CursorFlattened || isDMLPaired(q, claimed) {
 			continue
 		}
-		flow.Steps = append(flow.Steps, &Step{Query: q, TruncateSQL: truncateBefore(facts, q.StartLine), InLoop: inLoop(flow.Loops, q.StartLine)})
+		flow.Steps = append(flow.Steps, &Step{Query: q, TruncateSQL: truncateBefore(facts, q.StartLine), InLoop: InLoop(flow.Loops, q.StartLine)})
 	}
 
 	for _, s := range facts.AllSQL {
@@ -248,7 +248,9 @@ func overlap(binds, rowShape []string) int {
 	return n
 }
 
-func inLoop(loops []Loop, line int) bool {
+// InLoop reports whether the line falls inside one of the flow's loop
+// extents. The one containment check for the batch path (pyplan consumes it).
+func InLoop(loops []Loop, line int) bool {
 	for _, l := range loops {
 		if line >= l.StartLine && line <= l.EndLine {
 			return true
@@ -376,29 +378,27 @@ func debugGated(facts *scanner.SourceFacts, line int) bool {
 	return false
 }
 
-// findLoops locates while/for loop extents inside the body (the scanner
-// records if/else branches only). Header carries the condition text.
-func findLoops(lines []string, facts *scanner.SourceFacts, start, end int) []Loop {
+// findLoops maps the scanner's loop records onto the batch Loop shape: the
+// entry body's braced for/while loops, in source order. The scanner's frozen
+// loop inventory (FLW-1) is the single loop engine — batchflow carries no
+// brace matcher of its own. Do-loops are excluded (their extent is the
+// do-tail merge, not a while-header block) and unbraced bodies are dropped,
+// both matching the previous line-scan behavior. Headers are re-derived
+// from the source line so the JSON shape stays byte-identical.
+func findLoops(lines []string, facts *scanner.SourceFacts, entry string, start, end int) []Loop {
 	var out []Loop
-	for i := start; i <= end && i-1 < len(lines); i++ {
-		line := lines[i-1]
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "while") && !strings.HasPrefix(trimmed, "for") {
+	for _, l := range facts.Loops {
+		if l.Kind == scanner.LoopDo || l.BlockEnd == 0 || l.Function != entry {
 			continue
 		}
-		col := strings.Index(line, strings.TrimLeft(trimmed, " \t")) + 1
-		if facts.InComment(i, col) {
+		if l.StartLine < start || l.StartLine > end || l.StartLine-1 >= len(lines) {
 			continue
 		}
-		braceLine, braceCol := firstBrace(lines, i, col, facts)
-		if braceLine == 0 {
+		if facts.InComment(l.StartLine, l.StartCol) { // defensive: the scanner never records these
 			continue
 		}
-		closeLine := matchBrace(lines, braceLine, braceCol)
-		if closeLine == 0 {
-			continue
-		}
-		out = append(out, Loop{StartLine: i, EndLine: closeLine, Header: loopHeader(trimmed)})
+		trimmed := strings.TrimSpace(lines[l.StartLine-1])
+		out = append(out, Loop{StartLine: l.StartLine, EndLine: l.BlockEnd, Header: loopHeader(trimmed)})
 	}
 	return out
 }
@@ -408,117 +408,6 @@ func loopHeader(trimmed string) string {
 		return strings.TrimRight(trimmed[:i], " \t")
 	}
 	return trimmed
-}
-
-// firstBrace finds the opening brace of a loop header, starting at the
-// header line and scanning forward past the condition parens.
-func firstBrace(lines []string, line, col int, facts *scanner.SourceFacts) (int, int) {
-	depth := 0
-	for l := line; l <= len(lines); l++ {
-		text := lines[l-1]
-		from := 0
-		if l == line {
-			from = col - 1
-		}
-		for c := from; c < len(text); c++ {
-			switch text[c] {
-			case '/':
-				if c+1 < len(text) && text[c+1] == '/' {
-					return 0, 0
-				}
-				if c+1 < len(text) && text[c+1] == '*' && !facts.InComment(l, c+1) {
-					// skip to close
-					for {
-						if k := strings.Index(text[c:], "*/"); k >= 0 {
-							c += k + 1
-							break
-						}
-						l++
-						if l > len(lines) {
-							return 0, 0
-						}
-						text = lines[l-1]
-						c = 0
-					}
-					continue
-				}
-			case '"', '\'':
-				c = skipString(text, c)
-			case '(':
-				depth++
-			case ')':
-				depth--
-			case '{':
-				if depth <= 0 {
-					return l, c + 1
-				}
-			}
-		}
-	}
-	return 0, 0
-}
-
-// matchBrace returns the line of the closing brace matching the opener at
-// line/col (1-based col), skipping strings and comments.
-func matchBrace(lines []string, line, col int) int {
-	depth := 1
-	for l := line; l <= len(lines); l++ {
-		text := lines[l-1]
-		from := 0
-		if l == line {
-			from = col
-		}
-		for c := from; c < len(text); c++ {
-			switch text[c] {
-			case '/':
-				if c+1 < len(text) && text[c+1] == '/' {
-					c = len(text)
-					continue
-				}
-				if c+1 < len(text) && text[c+1] == '*' {
-					for {
-						if k := strings.Index(text[c:], "*/"); k >= 0 {
-							c += k + 1
-							break
-						}
-						l++
-						if l > len(lines) {
-							return 0
-						}
-						text = lines[l-1]
-						c = 0
-					}
-					continue
-				}
-			case '"', '\'':
-				c = skipString(text, c)
-			case '{':
-				depth++
-			case '}':
-				depth--
-				if depth == 0 {
-					return l
-				}
-			}
-		}
-	}
-	return 0
-}
-
-// skipString returns the index of the closing quote of the literal starting
-// at i (best-effort: handles the escaped quote; C has no multiline strings).
-func skipString(text string, i int) int {
-	q := text[i]
-	for j := i + 1; j < len(text); j++ {
-		if text[j] == '\\' {
-			j++
-			continue
-		}
-		if text[j] == q {
-			return j
-		}
-	}
-	return len(text) - 1
 }
 
 // truncateBefore returns the raw EXEC SQL TRUNCATE statement that sits
