@@ -1,0 +1,62 @@
+# nav.mapping.example.yaml — the endpoint-mapping input for `tuxgo plan` / `tuxgo convert`.
+#
+# WHY THIS FILE EXISTS: tuxgo never invents API endpoints. The IR extraction
+# (tuxgo extract) produces a numbered inventory of the entry file's top-level
+# branch conditions; THIS file is the human decision that promotes some of
+# those conditions to service endpoints with Go method names and route paths
+# (§4.2.8 of the PRD). Plan/convert fail if it is missing or maps nothing.
+#
+# Copy it next to your corpus (the demo values below map the synthetic
+# testdata/nav fixture, so `go run ./cmd/tuxgo plan testdata/nav -mapping
+# configs/nav.mapping.example.yaml` runs as-is) and edit per service.
+# Explicit -mapping on the CLI wins over convert.mapping in .tuxgo.yaml.
+
+# Dir-mode only (a directory holding several Tuxedo entries): the bare entry
+# file this mapping converts. One mapping yaml per service, collected in a
+# mapping directory passed via -mapping. Leave unset for single-file targets.
+# source: SVC_DEMO_LIST.pc
+
+service: nav                    # Go service/package name (must be a valid identifier)
+module: mutual-fund-be/pkg/services/nav   # import path of the target service tree
+
+readDBs:                        # logical read-database names the handler wiring passes
+  - EBATEST                     # to repo.Databases.ReadDatabase.<name> (R8: the generated
+  - MF                          # code plugs into the existing service layout)
+
+routeGroup: /nav                # route prefix every endpoint path mounts under
+
+endpoints:                      # condition index → endpoint (1-based into the IR's
+                                # condition inventory — run `tuxgo extract` to see it).
+                                # Every condition you map becomes a controller+handler
+                                # pair; every condition you omit stays logic-only.
+  - condition: 1                # inventory index (unique across this list)
+    name: NavHistory            # Go method name (valid identifier, unique)
+    route: /mfnavhistory        # route path under routeGroup (starts with /)
+  - condition: 2
+    name: SipFreedem
+    route: /mf_sipfreedem_schemes
+  - condition: 3
+    name: SipInsurance
+    route: /mf_sipinsurance_schemes
+  - condition: 4
+    name: NavList
+    route: /mfnavschemelist
+
+dbMethods:                      # OPTIONAL pins for DB method signatures (query ID →
+                                # method). Without a pin the tool falls back to
+                                # deterministic naming; a pin gives reference-quality
+                                # names/params so the generated store matches the
+                                # surrounding codebase. `fn_<name>:<qid>` keys pin the
+                                # queries inside an external fn_ library file.
+  q1:
+    name: GetDateDetails        # method name for query unit q1
+  cur_demo_hist:
+    name: GetNavHistory
+  q3:
+    name: GetCount
+    params:                     # per-bind params: "name" or "name:Type"
+      - matchAccount:string
+  cur_demo_list:
+    name: GetNavDetails
+  fn_is_demo_active:q1:         # q1 inside fn_demo_lib.pc (external fn lib)
+    name: IsDemoActive
