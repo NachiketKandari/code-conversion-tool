@@ -335,12 +335,7 @@ func (s *Service) conditionOf(e plan.Endpoint) *ir.Condition {
 		}
 		return c
 	}
-	for i := range s.Main.Conditions {
-		if s.Main.Conditions[i].Index == e.Condition {
-			return &s.Main.Conditions[i]
-		}
-	}
-	return nil
+	return s.Main.Condition(e.Condition)
 }
 
 // isCountQuery reports whether a SELECT single's select list is exactly a

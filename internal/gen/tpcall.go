@@ -102,7 +102,7 @@ func (s *Service) PlaceholderSignatures(c *ir.Condition, p *plan.Plan) []string 
 		if u.Kind != plan.KindTPCall || u.TP == nil {
 			continue
 		}
-		if u.TP.StartLine >= c.StartLine && u.TP.StartLine <= c.EndLine {
+		if c.ContainsLine(u.TP.StartLine) {
 			out = append(out, u.Name+"(send map[string]string) (recv map[string]string, error)")
 		}
 	}

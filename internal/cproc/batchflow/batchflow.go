@@ -205,11 +205,7 @@ func rubric(flow *Flow) string {
 }
 
 func isDML(q *ir.Query) bool {
-	switch q.Type {
-	case ir.QueryUpdate, ir.QueryDelete, ir.QueryInsert, ir.QueryMerge:
-		return true
-	}
-	return false
+	return q.Type.IsDML()
 }
 
 func isDMLPaired(q *ir.Query, claimed map[*ir.Query]*CursorGroup) bool {

@@ -173,7 +173,7 @@ func fmlCensus(n *Node) struct {
 // idiom). Unknown-role buffers stay conservative — a plain add is a
 // response write unless proven otherwise.
 func isErrorAdd(op ir.FmlOp, n *Node) bool {
-	if strings.Contains(strings.ToUpper(op.Field), "ERR") {
+	if ir.IsErrField(op.Field) {
 		return true
 	}
 	if role, ok := n.BufRoles[op.Buffer]; ok && (role == "input" || role == "send") {
@@ -206,7 +206,7 @@ func Census(c *ir.Condition) (gets, adds, errs []string) {
 		switch {
 		case op.Kind == ir.FmlGet:
 			add("/g", op.Field)
-		case op.Kind == ir.FmlAdd && strings.Contains(strings.ToUpper(op.Field), "ERR"):
+		case op.Kind == ir.FmlAdd && ir.IsErrField(op.Field):
 			add("/e", op.Field)
 		case op.Kind == ir.FmlAdd:
 			add("/a", op.Field)

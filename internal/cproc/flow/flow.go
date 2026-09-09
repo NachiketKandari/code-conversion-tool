@@ -474,7 +474,7 @@ func annotate(n *Node, facts *scanner.SourceFacts, fn string, irFile *ir.File) {
 func fetchesCursor(facts *scanner.SourceFacts, fn string, n *Node, cursor string) bool {
 	for i := range facts.AllSQL {
 		s := &facts.AllSQL[i]
-		if s.Func != fn || s.Kind != scanner.SQLFetch || !strings.EqualFold(s.CursorName, cursor) {
+		if s.Func != fn || s.Kind != scanner.SQLFetch || !ir.SameCursor(s.CursorName, cursor) {
 			continue
 		}
 		if s.StartLine >= n.Line && s.StartLine <= n.EndLine {

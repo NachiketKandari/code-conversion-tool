@@ -7,6 +7,8 @@
 package ir
 
 import (
+	"strings"
+
 	"github.com/Public/convert-tux-to-go/internal/cproc/pred"
 )
 
@@ -56,6 +58,24 @@ func (q QueryType) TemplateID() string {
 	default:
 		return ""
 	}
+}
+
+// IsDML reports whether the type is a data-modification statement (INSERT,
+// UPDATE, DELETE, MERGE) — the tx-variant family. One vocabulary for the
+// batch rubric, the plan, and the generators (A2.5).
+func (q QueryType) IsDML() bool {
+	switch q {
+	case QueryInsert, QueryUpdate, QueryDelete, QueryMerge:
+		return true
+	}
+	return false
+}
+
+// IsErrField reports whether an FML field is the project's error-emission
+// convention (any field whose name carries "ERR") — the one home of the
+// rule the flow matchers and the discovery census re-derived four times.
+func IsErrField(field string) bool {
+	return strings.Contains(strings.ToUpper(field), "ERR")
 }
 
 // FmlOpKind separates API inputs from API outputs (decision 10: Fget32 =
@@ -188,6 +208,31 @@ type Condition struct {
 	FmlOps    []FmlOp    `json:"fml_ops,omitempty"`
 	QueryIDs  []string   `json:"query_ids,omitempty"`
 	IsDefault bool       `json:"is_default,omitempty"`
+}
+
+// ContainsLine reports whether the 1-based line falls inside the
+// condition's inclusive source span — the one ownership predicate for
+// associating queries, calls, and tpcall sites with a condition (A2.5).
+func (c *Condition) ContainsLine(line int) bool {
+	return line >= c.StartLine && line <= c.EndLine
+}
+
+// Condition returns the inventory condition with the given 1-based index,
+// or nil. The one lookup for plan (map building) and gen (linear scans).
+func (f *File) Condition(index int) *Condition {
+	for i := range f.Conditions {
+		if f.Conditions[i].Index == index {
+			return &f.Conditions[i]
+		}
+	}
+	return nil
+}
+
+// SameCursor compares two cursor names under the house convention: the
+// scanner uppercases cursor names while the IR keeps raw casing, so all
+// consumers fold case. The one comparison rule (A2.5).
+func SameCursor(a, b string) bool {
+	return strings.EqualFold(a, b)
 }
 
 // ExternalFn is one called-but-not-defined project symbol (fn_*/chk_*).

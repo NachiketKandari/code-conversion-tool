@@ -97,11 +97,6 @@ func Build(opts Options) (*Plan, error) {
 	m := opts.Mapping
 	p := &Plan{Service: m.Service, Module: m.Module, Source: opts.Main.Path, Mapping: m}
 
-	// Condition lookup — inventory indices are 1-based.
-	condBy := make(map[int]*ir.Condition, len(opts.Main.Conditions))
-	for i := range opts.Main.Conditions {
-		condBy[opts.Main.Conditions[i].Index] = &opts.Main.Conditions[i]
-	}
 	// Discovery resolution (PRD-2026-09-10): conditionRef endpoints resolve
 	// through the flow tree, built lazily and at most once (flow.TreeFor is
 	// the shared derivation; plan's policy is to hard-error).
@@ -127,8 +122,8 @@ func Build(opts Options) (*Plan, error) {
 		if e.ConditionRef != "" {
 			return condRef(e.ConditionRef)
 		}
-		c, ok := condBy[e.Condition]
-		if !ok {
+		c := opts.Main.Condition(e.Condition)
+		if c == nil {
 			err := fmt.Errorf("plan: endpoint %s maps condition %d — inventory has %d conditions",
 				e.Name, e.Condition, len(opts.Main.Conditions))
 			if n := len(opts.Main.Unbalanced); n > 0 {
@@ -320,7 +315,7 @@ func Build(opts Options) (*Plan, error) {
 		tp := &opts.Main.TPCalls[i]
 		owner := ""
 		for _, e := range m.Endpoints {
-			if c, err := cond(e); err == nil && tp.StartLine >= c.StartLine && tp.StartLine <= c.EndLine {
+			if c, err := cond(e); err == nil && c.ContainsLine(tp.StartLine) {
 				owner = e.Name
 				break
 			}
@@ -432,7 +427,7 @@ func interfaceName(service string) string {
 func queriesIn(f *ir.File, c *ir.Condition) []string {
 	var ids []string
 	for _, q := range f.Queries {
-		if q.StartLine >= c.StartLine && q.StartLine <= c.EndLine {
+		if c.ContainsLine(q.StartLine) {
 			ids = append(ids, q.ID)
 		}
 	}
@@ -441,7 +436,7 @@ func queriesIn(f *ir.File, c *ir.Condition) []string {
 
 func callsiteIn(sites []int, c *ir.Condition) bool {
 	for _, s := range sites {
-		if s >= c.StartLine && s <= c.EndLine {
+		if c.ContainsLine(s) {
 			return true
 		}
 	}

@@ -139,7 +139,7 @@ func isRequestGuard(n *Node) bool {
 	}
 	errAdd := false
 	for _, op := range n.FmlOps {
-		if op.Kind == ir.FmlAdd && strings.Contains(strings.ToUpper(op.Field), "ERR") {
+		if op.Kind == ir.FmlAdd && ir.IsErrField(op.Field) {
 			errAdd = true
 		}
 	}
@@ -186,7 +186,7 @@ func fanoutAdds(n *Node) map[string][]string {
 		if op.Kind != ir.FmlAdd {
 			continue
 		}
-		if strings.Contains(strings.ToUpper(op.Field), "ERR") {
+		if ir.IsErrField(op.Field) {
 			continue
 		}
 		if role, ok := n.BufRoles[op.Buffer]; ok &&
