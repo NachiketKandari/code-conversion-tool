@@ -20,6 +20,9 @@ python_out/
 # real-service corpus: original .pc sources + their nav reference conversions + generic snippets (local only)
 tuxExamples/
 examples/
+# synthetic regression fixtures (tux .pc / converted go trees / python goldens): local only,
+# purged from history 2026-09-09 — tests run against the local copy, no example bytes in the repo
+testdata/
 conversion_logs/
 /tuxgo
 .tuxgo.yaml
