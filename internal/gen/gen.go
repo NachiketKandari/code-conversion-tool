@@ -7,13 +7,13 @@ package gen
 
 import (
 	"fmt"
-	"go/format"
 	"path/filepath"
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
+	"github.com/Public/convert-tux-to-go/internal/goast"
 	"github.com/Public/convert-tux-to-go/internal/plan"
 	"github.com/Public/convert-tux-to-go/internal/templates"
 )
@@ -439,20 +439,19 @@ func hasTimeParam(params []templates.ParamSpec) bool {
 }
 
 // render executes one embedded template. Go artifacts (anything starting
-// with a package clause) are normalized with go/format so generated files
-// pass the Tier-A gofmt check byte-for-byte; the router snippet (not Go)
-// passes through untouched.
+// with a package clause) are normalized through the shared goast.Emit gate
+// so generated files pass the Tier-A gofmt check byte-for-byte; the router
+// snippet (not Go) passes through untouched.
 func render(id templates.ID, data any) (string, error) {
 	out, err := templates.NewEmbeddedProvider().Render(id, data)
 	if err != nil {
 		return "", err
 	}
 	if strings.HasPrefix(out, "package ") {
-		formatted, ferr := format.Source([]byte(out))
-		if ferr != nil {
-			return "", fmt.Errorf("gen: %s output does not parse: %w", id, ferr)
+		out, err = goast.Emit("gen: "+string(id), out)
+		if err != nil {
+			return "", err
 		}
-		out = string(formatted)
 	}
 	return out, nil
 }

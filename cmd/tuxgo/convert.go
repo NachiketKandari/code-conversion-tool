@@ -263,18 +263,18 @@ func printServiceSummary(service string, res *convert.Result, led *ledger.Ledger
 // internal/gen (shared with `gentest`, PRD-2026-09-09 GT-D7); this wrapper
 // computes the plan's two interface targets.
 func runMocks(ctx context.Context, base string, p *plan.Plan) {
-	gen.RunMocks(ctx, []gen.MockTarget{
-		{
-			Source: filepath.Join(base, mockRel(p, "db", "interface.go")),
-			Dest:   filepath.Join(base, mockRel(p, "db", "mock_store.go")),
-			Name:   serviceName(p) + "Store",
-		},
-		{
-			Source: filepath.Join(base, mockRel(p, "controller", "interface.go")),
-			Dest:   filepath.Join(base, mockRel(p, "controller", "mock_controller.go")),
-			Name:   serviceName(p) + "Controller",
-		},
-	})
+	targets := gen.MockTargetsFor(base, p.Service)
+	for i := range targets {
+		// The plan's unit target paths may override the conventional
+		// service subtree (custom layouts) — keep the mockRel resolution.
+		folder := "db"
+		if i == 1 {
+			folder = "controller"
+		}
+		targets[i].Source = filepath.Join(base, mockRel(p, folder, "interface.go"))
+		targets[i].Dest = filepath.Join(base, mockRel(p, folder, filepath.Base(targets[i].Dest)))
+	}
+	gen.RunMocks(ctx, targets)
 }
 
 func mockRel(p *plan.Plan, folder, file string) string {

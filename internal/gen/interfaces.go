@@ -3,7 +3,6 @@ package gen
 import (
 	"errors"
 	"fmt"
-	"go/format"
 	"os"
 	"path/filepath"
 	"sort"
@@ -103,11 +102,7 @@ func (s *Service) DBMethodsFile(p *plan.Plan) (string, error) {
 // gofmt normalizes manually assembled Go sources so generated files pass
 // the Tier-A gofmt check byte-for-byte.
 func gofmt(src string) (string, error) {
-	formatted, err := format.Source([]byte(src))
-	if err != nil {
-		return "", fmt.Errorf("gen: assembled source does not parse: %w", err)
-	}
-	return string(formatted), nil
+	return goast.Emit("gen: assembled source", src)
 }
 
 // methodParams resolves a query's parameter specs (binds + pin) without

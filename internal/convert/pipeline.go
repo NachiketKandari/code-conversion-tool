@@ -10,7 +10,6 @@ package convert
 import (
 	"context"
 	"fmt"
-	"go/format"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,6 +22,7 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/gen"
+	"github.com/Public/convert-tux-to-go/internal/goast"
 	"github.com/Public/convert-tux-to-go/internal/ledger"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/plan"
@@ -468,7 +468,7 @@ func branchSource(src string, from, to int) string {
 // only parse errors reject an attempt.
 func validateBody(opts Options, body string) []string {
 	wrapped := "package controller\n\nimport (\n\t\"context\"\n\tmodels \"mutual-fund-be/pkg/services/nav/models\"\n)\n\ntype t struct{}\n\nfunc (t) Check(ctx context.Context) (err error) {\n" + body + "\n}\n"
-	if _, ferr := format.Source([]byte(wrapped)); ferr != nil {
+	if _, ferr := goast.Emit("convert: controller body", wrapped); ferr != nil {
 		return validate.TrimGoErrors(ferr.Error())
 	}
 	return nil
@@ -518,11 +518,11 @@ func appendControllerMethod(ctx context.Context, opts Options, res *Result, svc 
 		}
 		merged = header + "\n" + strings.TrimRight(method, "\n") + "\n"
 	}
-	formatted, ferr := format.Source([]byte(merged))
+	formatted, ferr := goast.Emit("convert: controller file", merged)
 	if ferr != nil {
-		return fmt.Errorf("convert: controller file does not parse after append: %w", ferr)
+		return ferr
 	}
-	if err := os.WriteFile(path, formatted, 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(formatted), 0o644); err != nil {
 		return err
 	}
 	if err := validateFile(ctx, opts, path); err != nil {

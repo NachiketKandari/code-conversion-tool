@@ -16,6 +16,26 @@ type MockTarget struct {
 	Name   string // interface name
 }
 
+// MockTargetsFor derives the standard db/controller mock targets (A4.3) —
+// the one table for the artifact conventions (mock_store.go /
+// mock_controller.go, `<Service>Store` / `<Service>Controller`). Paths that
+// do not exist are omitted (gentest best-effort semantics); convert passes
+// existence through to RunMocks, so the filter is harmless there.
+func MockTargetsFor(serviceDir, service string) []MockTarget {
+	return []MockTarget{
+		{
+			Source: filepath.Join(serviceDir, "db", "interface.go"),
+			Dest:   filepath.Join(serviceDir, "db", "mock_store.go"),
+			Name:   service + "Store",
+		},
+		{
+			Source: filepath.Join(serviceDir, "controller", "interface.go"),
+			Dest:   filepath.Join(serviceDir, "controller", "mock_controller.go"),
+			Name:   service + "Controller",
+		},
+	}
+}
+
 // RunMocks regenerates the uber-go/mock doubles for targets when the
 // mockgen binary is available; otherwise it is a WARN + skip — never a
 // run failure (plan-conversion §4.7). Shared by `convert` and `gentest`

@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"go/ast"
-	"go/format"
 	"go/parser"
 	"go/token"
 	"io"
@@ -26,6 +25,7 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/gen"
+	"github.com/Public/convert-tux-to-go/internal/goast"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
 	"github.com/Public/convert-tux-to-go/internal/templates"
@@ -476,14 +476,11 @@ func composeFile(sc *serviceCtx, layer testscan.Layer, outFile, suite string, me
 	if err != nil {
 		return "", err
 	}
-	fset := token.NewFileSet()
-	if _, err := parser.ParseFile(fset, outFile, out, parser.SkipObjectResolution); err != nil {
-		return "", fmt.Errorf("parse gate: %w", err)
+	formatted, ferr := goast.Emit("gentest: "+outFile, out)
+	if ferr != nil {
+		return "", ferr
 	}
-	if formatted, ferr := format.Source([]byte(out)); ferr == nil {
-		out = string(formatted)
-	}
-	return out, nil
+	return formatted, nil
 }
 
 // buildServiceCtxs builds per-service extraction contexts from the scan.
@@ -650,21 +647,15 @@ func handlerCtorCall(sc *serviceCtx) string {
 }
 
 // runServiceMocks regenerates db/controller mocks for every touched service
-// (best-effort, shared runner; the target tree's interfaces only).
+// (best-effort, shared runner; the target tree's interfaces only). The
+// target derivation is the shared gen.MockTargetsFor table (A4.3).
 func runServiceMocks(ctx context.Context, svcs []*serviceCtx) {
 	var targets []gen.MockTarget
 	for _, sc := range svcs {
-		dbIface := filepath.Join(sc.dir, "db", "interface.go")
-		ctrlIface := filepath.Join(sc.dir, "controller", "interface.go")
-		if _, err := os.Stat(dbIface); err == nil {
-			targets = append(targets, gen.MockTarget{
-				Source: dbIface, Dest: filepath.Join(sc.dir, "db", "mock_store.go"), Name: dbIfaceName(sc),
-			})
-		}
-		if _, err := os.Stat(ctrlIface); err == nil {
-			targets = append(targets, gen.MockTarget{
-				Source: ctrlIface, Dest: filepath.Join(sc.dir, "controller", "mock_controller.go"), Name: ctrlIfaceName(sc),
-			})
+		for _, t := range gen.MockTargetsFor(sc.dir, dbIfaceName(sc)[:len(dbIfaceName(sc))-len("Store")]) {
+			if _, err := os.Stat(t.Source); err == nil {
+				targets = append(targets, t)
+			}
 		}
 	}
 	if len(targets) == 0 {

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -23,6 +24,19 @@ var (
 	ErrInterfaceNotFound = errors.New("goast: interface not found")
 	ErrSignatureConflict = errors.New("goast: method already present with a different signature")
 )
+
+// Emit is the one emission gate (A4.1): parse a Go source string, normalize
+// it with go/format, and return the formatted bytes or a parse error. Every
+// generated-Go write path (template render, assembled interface files,
+// appended controller methods, composed test files) normalizes through this
+// one function; the error prefix names the origin for the retry loop.
+func Emit(origin, src string) (string, error) {
+	formatted, err := format.Source([]byte(src))
+	if err != nil {
+		return "", fmt.Errorf("%s: output does not parse: %w", origin, err)
+	}
+	return string(formatted), nil
+}
 
 // Signature is one method clause of an interface as written in the source.
 type Signature struct {
