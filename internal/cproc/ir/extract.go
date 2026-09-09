@@ -249,7 +249,7 @@ func fnRanges(facts *scanner.SourceFacts) map[string]fnRange {
 
 // build derives the IR from scanned facts. Pure: same facts → same IR.
 func build(facts *scanner.SourceFacts, opts Options) *File {
-	facts = commentLiveFacts(facts)
+	facts = LiveFacts(facts)
 	f := &File{Path: facts.Path, Fragment: facts.Fragment}
 	for _, u := range facts.Unbalanced {
 		f.Unbalanced = append(f.Unbalanced, Unbalanced{Kind: u.Kind, Line: u.StartLine, Col: u.StartCol})
@@ -303,13 +303,15 @@ func branchingOf(facts *scanner.SourceFacts) (count, factor int) {
 	return count, factor
 }
 
-// commentLiveFacts excludes any call or SQL statement whose start position
-// falls inside a recorded comment span (PF-1.5) — with the comment inventory
-// in place the exclusion is a deterministic overlap query instead of a
-// scanner incident. Recorded facts never sit inside comments (the scanner
-// skips them), so on healthy inputs this is a no-op; on malformed ones it is
-// the loud, testable rule.
-func commentLiveFacts(facts *scanner.SourceFacts) *scanner.SourceFacts {
+// LiveFacts excludes any call or SQL statement whose start position falls
+// inside a recorded comment span (PF-1.5) — with the comment inventory in
+// place the exclusion is a deterministic overlap query instead of a scanner
+// incident. Recorded facts never sit inside comments (the scanner skips
+// them), so on healthy inputs this is a no-op; on malformed ones it is the
+// loud, testable rule. This is the single home of the comment-live-facts
+// rule: ir extraction and the analyzer both consume it, so the two
+// pipelines cannot disagree about what is live code (A2.1).
+func LiveFacts(facts *scanner.SourceFacts) *scanner.SourceFacts {
 	if len(facts.Comments) == 0 {
 		return facts
 	}

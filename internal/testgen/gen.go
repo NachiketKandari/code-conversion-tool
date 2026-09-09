@@ -24,7 +24,7 @@ import (
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
-	"github.com/Public/convert-tux-to-go/internal/conc"
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/gen"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
@@ -141,7 +141,7 @@ func Generate(ctx context.Context, tgt *testscan.Target, rep *testscan.Report, o
 	// Per-function worker pool: units are independent; results merge in
 	// input order so workers=1 and workers=N produce identical bytes.
 	blocks := make([]*block, len(units))
-	conc.RunIndexed(len(units), opts.Workers, func(i int) {
+	common.RunIndexed(len(units), opts.Workers, func(i int) {
 		blocks[i] = renderUnit(ctx, units[i], opts)
 	})
 

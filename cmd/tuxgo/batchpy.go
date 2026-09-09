@@ -14,7 +14,7 @@ import (
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
-	"github.com/Public/convert-tux-to-go/internal/conc"
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/config"
 	"github.com/Public/convert-tux-to-go/internal/cproc/batchflow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
@@ -127,7 +127,7 @@ func runBatchpy(ctx context.Context, args []string) error {
 		err   error
 	}
 	results := make([]fileResult, len(paths))
-	conc.RunIndexed(len(paths), workers, func(i int) {
+	common.RunIndexed(len(paths), workers, func(i int) {
 		path := paths[i]
 		start := time.Now()
 		telemetry.Log(ctx).Info("batch file started", "source", path)

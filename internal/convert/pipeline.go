@@ -19,7 +19,7 @@ import (
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
-	"github.com/Public/convert-tux-to-go/internal/conc"
+	"github.com/Public/convert-tux-to-go/internal/common"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/gen"
@@ -624,7 +624,7 @@ func dbSignatures(p *plan.Plan, bodies map[string]dbOut) string {
 func renderDBUnits(svc *gen.Service, units []plan.Unit, workers int) (map[string]dbOut, error) {
 	out := make([]dbOut, len(units))
 	errs := make([]error, len(units))
-	conc.RunIndexed(len(units), workers, func(i int) {
+	common.RunIndexed(len(units), workers, func(i int) {
 		body, sig, _, err := svc.DBMethod(units[i])
 		if err != nil {
 			errs[i] = err

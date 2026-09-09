@@ -1,7 +1,11 @@
-// Package conc is the concurrency kernel: the bounded-index fan-out pool
-// shared by every fan-out site (convert's DB renders and per-service dir
-// workers, batchpy's per-file workers, gentest's per-function pool).
-package conc
+// Package common is the stdlib-only leaf: primitives shared across domain
+// boundaries (bounded fan-out, text primitives, identifier casing). The
+// package law is enforced by TestCommonImportsNothingInternal — it must
+// never import another internal package. Anything needing audit/budget/
+// scanner/etc. is domain knowledge and lives with its owning package (see
+// the ownership table in AGENTS.md, AD1): "does it belong in common?" is a
+// compile-checkable question, not a review debate.
+package common
 
 import "sync"
 
