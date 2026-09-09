@@ -52,50 +52,28 @@ func main() {
 	started := time.Now()
 	log.Info("run started", "version", version, "command", rest[0], "args", rest[1:], "log_dir", logDir, "verbose", verbose)
 
-	switch rest[0] {
-	case "analyze":
-		if err := runAnalyze(ctx, rest[1:]); err != nil {
-			log.Error("analyze failed", "error", err)
+	// A5.1: table-driven dispatch — one loop owns per-command error/exit;
+	// the run-completed duration line below covers every command.
+	commands := map[string]func(context.Context, []string) error{
+		"analyze":  runAnalyze,
+		"extract":  runExtract,
+		"plan":     runPlan,
+		"convert":  runConvert,
+		"batchpy":  runBatchpy,
+		"gentest":  runGentest,
+		"flow":     runFlow,
+		"discover": runDiscover,
+	}
+	run, ok := commands[rest[0]]
+	switch {
+	case ok:
+		if err := run(ctx, rest[1:]); err != nil {
+			log.Error(rest[0]+" failed", "error", err)
 			os.Exit(1)
 		}
-	case "extract":
-		if err := runExtract(ctx, rest[1:]); err != nil {
-			log.Error("extract failed", "error", err)
-			os.Exit(1)
-		}
-	case "plan":
-		if err := runPlan(ctx, rest[1:]); err != nil {
-			log.Error("plan failed", "error", err)
-			os.Exit(1)
-		}
-	case "convert":
-		if err := runConvert(ctx, rest[1:]); err != nil {
-			log.Error("convert failed", "error", err)
-			os.Exit(1)
-		}
-	case "batchpy":
-		if err := runBatchpy(ctx, rest[1:]); err != nil {
-			log.Error("batchpy failed", "error", err)
-			os.Exit(1)
-		}
-	case "gentest":
-		if err := runGentest(ctx, rest[1:]); err != nil {
-			log.Error("gentest failed", "error", err)
-			os.Exit(1)
-		}
-	case "flow":
-		if err := runFlow(ctx, rest[1:]); err != nil {
-			log.Error("flow failed", "error", err)
-			os.Exit(1)
-		}
-	case "discover":
-		if err := runDiscover(ctx, rest[1:]); err != nil {
-			log.Error("discover failed", "error", err)
-			os.Exit(1)
-		}
-	case "version":
+	case rest[0] == "version":
 		fmt.Printf("tuxgo version %s\n", version)
-	case "help", "-h", "--help":
+	case rest[0] == "help" || rest[0] == "-h" || rest[0] == "--help":
 		printUsage()
 	default:
 		log.Error("unknown command", "command", rest[0])
@@ -226,9 +204,12 @@ Available Commands:
 
 // reorderArgs separates flag tokens (with their values) from positional
 // arguments so flags may appear before or after the target path — the stdlib
-// flag package otherwise stops parsing at the first positional.
+// flag package otherwise stops parsing at the first positional. Value flags
+// are derived from the subcommand FlagSets (A5.1): a flag is value-taking
+// when some command registers it as a String/Duration/etc. (Visit reports
+// it) and not a Bool — the hand-maintained map is gone.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true, "layers": true}
+	valueFlags := deriveValueFlags()
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
@@ -247,6 +228,68 @@ func reorderArgs(args []string) (flagArgs, positional []string) {
 		positional = append(positional, a)
 	}
 	return flagArgs, positional
+}
+
+// deriveValueFlags registers every subcommand's flags into throwaway
+// FlagSets and reports the names whose values are not boolean. A new value
+// flag added to any subcommand is picked up automatically.
+func deriveValueFlags() map[string]bool {
+	valueFlags := map[string]bool{}
+	register := func(fs *flag.FlagSet) {
+		fs.VisitAll(func(f *flag.Flag) {
+			if f.DefValue != "false" && f.DefValue != "true" {
+				valueFlags[f.Name] = true
+			}
+		})
+	}
+	registerFlags := map[string]func(*flag.FlagSet){
+		"analyze": func(fs *flag.FlagSet) { fs.String("csv", "", ""); fs.String("weights", "", "") },
+		"extract": func(fs *flag.FlagSet) { fs.String("out", "", ""); fs.String("config", "", "") },
+		"plan": func(fs *flag.FlagSet) {
+			fs.String("mapping", "", "")
+			fs.String("config", "", "")
+			fs.String("ledger", "", "")
+			fs.Bool("fragment", false, "")
+		},
+		"convert": func(fs *flag.FlagSet) {
+			fs.String("mapping", "", "")
+			fs.String("config", "", "")
+			fs.String("base", "", "")
+			fs.Bool("no-llm", false, "")
+			fs.Bool("fragment", false, "")
+		},
+		"batchpy": func(fs *flag.FlagSet) {
+			fs.String("out", "", "")
+			fs.String("config", "", "")
+			fs.Bool("no-llm", false, "")
+			fs.String("shape", "", "")
+			fs.String("dml-loop", "", "")
+		},
+		"gentest": func(fs *flag.FlagSet) {
+			fs.String("layers", "", "")
+			fs.Bool("check-only", false, "")
+			fs.String("base", "", "")
+			fs.Bool("no-llm", false, "")
+			fs.String("config", "", "")
+		},
+		"flow": func(fs *flag.FlagSet) {
+			fs.String("out", "", "")
+			fs.Bool("go", false, "")
+			fs.String("config", "", "")
+		},
+		"discover": func(fs *flag.FlagSet) {
+			fs.String("out", "", "")
+			fs.Bool("stdout", false, "")
+			fs.Bool("no-llm", false, "")
+			fs.String("config", "", "")
+		},
+	}
+	for _, fn := range registerFlags {
+		fs := flag.NewFlagSet("derive", flag.ContinueOnError)
+		fn(fs)
+		register(fs)
+	}
+	return valueFlags
 }
 
 func runAnalyze(ctx context.Context, args []string) error {
