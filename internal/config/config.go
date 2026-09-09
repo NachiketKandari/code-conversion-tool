@@ -71,6 +71,7 @@ func Default() *Config {
 		Paths:       DefaultPaths(),
 		Batchpy:     DefaultBatchpy(),
 		Convert:     Convert{FlowDraft: ptrb(true)},
+		Discover:    Discover{Mode: "auto"},
 	}
 }
 
@@ -129,9 +130,23 @@ type Config struct {
 	ValidateCfg ValidateCfg `yaml:"validate"`
 	DB          DB          `yaml:"db"`
 	Convert     Convert     `yaml:"convert"`
+	Discover    Discover    `yaml:"discover"`
 	Buffers     Buffers     `yaml:"buffers"`
 	Paths       Paths       `yaml:"paths"`
 	Batchpy     Batchpy     `yaml:"batchpy"`
+}
+
+// Discover carries the endpoint-discovery command's options (PRD-2026-09-10
+// endpoint discovery). Naming mode is a switch: "ai" forces the model, "deterministic"
+// never calls it, "auto" (default) uses the model when configured and
+// reachable with a deterministic fallback per candidate. AI naming only
+// proposes DRAFT defaults — the draft stays the user's decision (§4.2.8),
+// the deterministic census never depends on it, and every failure degrades.
+type Discover struct {
+	// Mode is ai | deterministic | auto (-mode overrides for one run).
+	// Params always stay deterministic — the IR derives them from the
+	// query binds.
+	Mode string `yaml:"mode"`
 }
 
 // Batchpy carries the batch→Python conventions (PRD-2026-09-08 BP-7):

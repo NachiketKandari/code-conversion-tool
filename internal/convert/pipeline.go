@@ -24,7 +24,6 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
-	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
 	"github.com/Public/convert-tux-to-go/internal/gen"
 	"github.com/Public/convert-tux-to-go/internal/ledger"
 	"github.com/Public/convert-tux-to-go/internal/llm"
@@ -363,11 +362,7 @@ func flowDraft(opts Options, svc *gen.Service, c *ir.Condition) string {
 	if opts.Main == nil || opts.Source == "" {
 		return ""
 	}
-	facts, err := scanner.ScanBytes([]byte(opts.Source), opts.Main.Path)
-	if err != nil {
-		return ""
-	}
-	tree := flow.Build([]byte(opts.Source), facts, opts.Main.Entry, opts.Main)
+	tree := flowTreeOf(opts.Source, opts.Main)
 	if len(tree.Root) == 0 {
 		return ""
 	}
@@ -377,6 +372,17 @@ func flowDraft(opts Options, svc *gen.Service, c *ir.Condition) string {
 	}
 	out := flow.RenderSpan(tree, planResolver{svc: svc, calls: calls}, c.StartLine, c.EndLine, 2)
 	return strings.TrimRight(out.Body, "\n")
+}
+
+// flowTreeOf scans source the way the extraction path did (fragments wrap
+// via ScanFragment) and builds the entry function's flow tree; any failure
+// yields an empty tree, never a panic.
+func flowTreeOf(src string, f *ir.File) *flow.Tree {
+	facts, err := flow.ScanForIR(src, f)
+	if err != nil {
+		return &flow.Tree{}
+	}
+	return flow.Build([]byte(src), facts, f.Entry, f)
 }
 
 // planResolver adapts the plan's store calls and row names to the flow

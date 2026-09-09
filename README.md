@@ -231,11 +231,22 @@ Fault tolerance is contractual: malformed input (unbalanced braces, parenless he
 
 ## `discover` — endpoint scan-then-tag *(PRD 2026-09-10)*
 
-`tuxgo discover <file|dir>` removes the mapping-yaml authoring burden while keeping the human decision (§4.2.8 — the tool never invents endpoints): it finds the **API candidates** — conditions/blocks enclosing `Fget32` request reads **and** non-error `Fadd32` response writes (error emissions — `FML_ERR_MSG` into the input buffer, "fadd err = returning error" — never count; an if enclosing only error emission is a guard, not an API), including qualifying nested ifs (keyed `c<n>.<k>`; subsets of their parent are marked redundant), and emits a **mapping draft yaml**: `condition: n` / `conditionRef: c<n>.<k>` entries with `name: ""`/`route: ""` to tag, per-candidate read/write/query census comments, non-candidates kept commented-out for control, `service` prefilled. Tag the draft and feed it straight back: `-mapping <file>` (or a directory of tagged drafts in dir mode). An untagged draft fails mapping validation with the tag instruction; existing hand-written `condition: int` mappings are unaffected.
+`tuxgo discover <file|dir>` removes the mapping-yaml authoring burden while keeping the human decision (§4.2.8 — the tool never invents endpoints): it finds the **API candidates** — conditions/blocks enclosing `Fget32` request reads **and** non-error `Fadd32` response writes (error emissions — `FML_ERR_MSG` into the input buffer, "fadd err = returning error" — never count; an if enclosing only error emission is a guard, not an API), including qualifying nested ifs (keyed `c<n>.<k>`; subsets of their parent are marked redundant), and emits an **editable mapping draft** per entry: endpoints with pre-filled `name`/`route`, per-candidate read/write/query census comments, non-candidates kept commented-out for control, `service` prefilled, and a `dbMethods:` block (AI-proposed pins, or the commented skeleton listing the entry's query IDs). Fill `module:`/`readDBs:` and feed the draft straight back: `-mapping <file>` (or a directory of drafts in dir mode). Standalone fragments (no `void SVC_*` entry) discover the same way.
+
+**Naming modes** (`-mode`, or `discover.mode` in `.tuxgo.yaml` — `ai` | `deterministic` | `auto`, default `auto`):
+
+- `ai` — one LLM call per candidate endpoint (branch source + its query SQL; params stay deterministic from the IR binds) proposes the endpoint name/route and db-method/row pins, marked `# ai-suggested — edit freely`. Unknown query ids and non-identifier proposals are dropped; per-candidate failures fall back to deterministic names.
+- `deterministic` — names derived from the strongest semantic token source (cursor name `cur_mf_nav_hist` → `GetMfNavHist`; else the first response field → `GetMfNavDate`; else `Endpoint<n>`), marked `# deterministic — edit freely`. Zero model calls.
+- `auto` — AI when configured and reachable, deterministic otherwise.
+
+Drafts land as `mappings/<entry>.mapping.yaml` (`-out` overrides, `-stdout` prints); a re-run never overwrites an existing draft — the fresh one lands alongside as `<entry> (1).mapping.yaml`. The bare command falls back to `convert.input`; `-no-llm`-equivalent is `-mode deterministic`. Every command's wall-clock duration is recorded in the run log (`run completed … duration_ms`).
 
 ```sh
-go run ./cmd/tuxgo discover testdata/nav/SVC_DEMO_LIST.pc          # draft to stdout
-go run ./cmd/tuxgo discover <dir> -out mappings/                   # one draft per entry
+go run ./cmd/tuxgo discover tuxExamples/mainTux.pc            # auto mode → mappings/mainTux.mapping.yaml
+go run ./cmd/tuxgo discover tuxExamples/mainTux.pc -mode ai   # force the model (one call per candidate)
+go run ./cmd/tuxgo discover tuxExamples/mainTux.pc -mode deterministic -stdout
+go run ./cmd/tuxgo discover <dir>                             # one draft per entry in mappings/
+go run ./cmd/tuxgo discover                                   # uses convert.input from .tuxgo.yaml
 ```
 
 ## Working-directory layout
@@ -246,6 +257,8 @@ The agreed runtime layout (where the built binary lives):
 <workdir>/
 ├── tuxgo                       # the built binary (go build -o tuxgo ./cmd/tuxgo)
 ├── .tuxgo.yaml                 # run config — copy of configs/.tuxgo.example.yaml, edited
+├── mappings/                   # discover's draft mappings (gitignored) — edit name/route,
+                                 # then pass the file/dir to plan/convert via -mapping
 ├── tux/                        # the .pc corpus to convert (default input dir)
 └── conversion_logs/            # everything the tool writes (gitignored)
     ├── logs/

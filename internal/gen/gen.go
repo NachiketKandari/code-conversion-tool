@@ -13,7 +13,6 @@ import (
 
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
-	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
 	"github.com/Public/convert-tux-to-go/internal/plan"
 	"github.com/Public/convert-tux-to-go/internal/templates"
 )
@@ -323,7 +322,7 @@ func (s *Service) conditionOf(e plan.Endpoint) *ir.Condition {
 			if strings.TrimSpace(s.source) == "" {
 				return nil
 			}
-			facts, err := scanner.ScanBytes([]byte(s.source), s.Main.Path)
+			facts, err := flow.ScanForIR(s.source, s.Main)
 			if err != nil {
 				return nil
 			}

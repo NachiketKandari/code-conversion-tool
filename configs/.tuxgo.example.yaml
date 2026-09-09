@@ -89,6 +89,15 @@ convert:                     # defaults for plan/convert so repeat runs need no 
                              # Empty (default) = every entry. Helper/fn libs never need to
                              # match (they stay in the resolution pool); a dir-mode mapping
                              # for an excluded entry is skipped with a warning, not an error
+  flowDraft: true            # feed the deterministic flow-tree draft (PRD 2026-09-10)
+                             # into the controller prompt for the LLM to enhance — the
+                             # REQUIRED-CALLS gate is unchanged; false for prompt A/B runs
+
+discover:                    # endpoint scan-then-tag (`tuxgo discover`, PRD 2026-09-10)
+  mode: auto                 # draft naming: ai (one LLM call per candidate, advisory
+                             # defaults) | deterministic (cursor/FML-derived names, zero
+                             # model calls) | auto (AI when configured and reachable,
+                             # deterministic fallback per candidate). -mode overrides.
 
 validate:                    # gofmt → go build → go vet → go test loop (G6)
   maxRetries: 3              # bounded retries with trimmed errors fed back

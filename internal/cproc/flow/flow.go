@@ -154,6 +154,22 @@ func tailAfterCol(line string, col int) string {
 	return line[col:]
 }
 
+// ScanForIR scans source text the way the extraction path did: a fragment
+// file (no entry function — a lone block/branch, PF-3) is wrapped by
+// ScanFragment so the __fragment function def and rebased line numbers
+// exist; otherwise the plain scan applies. Consumers re-deriving flow trees
+// from an ir.File (plan, gen, the flow/discover commands) must use this —
+// a plain ScanBytes on fragment text sees no function body and yields an
+// empty tree even though the IR is complete.
+func ScanForIR(src string, f *ir.File) (*scanner.SourceFacts, error) {
+	if f.Fragment {
+		return scanner.ScanFragment([]byte(src), f.Path)
+	}
+	return scanner.ScanBytes([]byte(src), f.Path)
+}
+
+// pickFunction resolves the function to build: the named function, the
+// fragment's synthesized pseudo-function, or a single-function file.
 func pickFunction(facts *scanner.SourceFacts, fn string) (*scanner.FunctionDef, string) {
 	if fn == "" && facts.Fragment && len(facts.Functions) > 0 {
 		return &facts.Functions[0], facts.Functions[0].Name

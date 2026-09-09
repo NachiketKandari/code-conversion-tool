@@ -20,6 +20,9 @@ python_out/
 # real-service corpus: original .pc sources + their nav reference conversions + generic snippets (local only)
 tuxExamples/
 examples/
+# discovery drafts: generated from the local corpus, edited locally (tagged mappings may still carry corpus hints)
+mappings/
+stuff-i-want-checked/
 # synthetic regression fixtures (tux .pc / converted go trees / python goldens): local only,
 # purged from history 2026-09-09 — tests run against the local copy, no example bytes in the repo
 testdata/

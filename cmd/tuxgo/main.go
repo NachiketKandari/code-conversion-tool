@@ -49,6 +49,7 @@ func main() {
 	defer cleanup()
 
 	log := telemetry.Log(ctx)
+	started := time.Now()
 	log.Info("run started", "version", version, "command", rest[0], "args", rest[1:], "log_dir", logDir, "verbose", verbose)
 
 	switch rest[0] {
@@ -103,7 +104,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.Info("run completed", "command", rest[0])
+	// Every command's wall-clock duration lands in the run log — the
+	// machine twin (JSONL) and human log carry the same field.
+	log.Info("run completed", "command", rest[0], "duration_ms", time.Since(started).Milliseconds())
 }
 
 // newRunID returns the run identifier: local time as DDMMYYYY_HHMMSS (easy
@@ -208,8 +211,10 @@ Available Commands:
                the deterministic Go transpilation draft
   discover     Scan-then-tag endpoint discovery: find the API candidates
                (conditions enclosing Fget32 reads + non-error Fadd32
-               writes), emit a mapping draft yaml per entry, and tag
-               name/route before plan/convert consume it
+               writes) and write a mapping draft per entry to mappings/
+               (default; -out overrides, -stdout prints) — tag name/route
+               before plan/convert consume it; the target falls back to
+               convert.input, so a bare discover command works
   version      Print version information
 
 `)
@@ -219,7 +224,7 @@ Available Commands:
 // arguments so flags may appear before or after the target path — the stdlib
 // flag package otherwise stops parsing at the first positional.
 func reorderArgs(args []string) (flagArgs, positional []string) {
-	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true, "layers": true}
+	valueFlags := map[string]bool{"csv": true, "weights": true, "out": true, "config": true, "mapping": true, "ledger": true, "base": true, "shape": true, "dml-loop": true, "layers": true, "mode": true}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {

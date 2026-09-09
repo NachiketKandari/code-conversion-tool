@@ -8,7 +8,6 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
-	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
 )
 
 // Kind classifies a generation unit.
@@ -111,7 +110,7 @@ func Build(opts Options) (*Plan, error) {
 			if strings.TrimSpace(opts.Source) == "" {
 				return nil, fmt.Errorf("plan: endpoint references candidate %s but no source is available to re-derive the flow tree", ref)
 			}
-			facts, err := scanner.ScanBytes([]byte(opts.Source), opts.Main.Path)
+			facts, err := flow.ScanForIR(opts.Source, opts.Main)
 			if err != nil {
 				return nil, fmt.Errorf("plan: flow tree for candidate %s: %w", ref, err)
 			}

@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/budget"
 	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
-	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
+	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
 )
 
@@ -24,31 +26,65 @@ import (
 func runDiscover(ctx context.Context, args []string) error {
 	log := telemetry.Log(ctx)
 	fs := flag.NewFlagSet("discover", flag.ContinueOnError)
-	outDir := fs.String("out", "", "Directory for the per-entry draft yamls (required for directory targets; file mode prints to stdout)")
+	outDir := fs.String("out", "", "Directory for the draft yamls (default: mappings/)")
+	stdout := fs.Bool("stdout", false, "Print the draft(s) instead of writing files")
+	namingMode := fs.String("mode", "", "Naming mode: ai | deterministic | auto (default from discover.mode, else auto — AI when configured and reachable, deterministic fallback)")
+	aiFlag := fs.Bool("ai", false, "Shorthand for -mode ai")
 	configPath := fs.String("config", "", "Path to .tuxgo.yaml (default: ./.tuxgo.yaml when present, else defaults)")
 
 	flagArgs, positional := reorderArgs(args)
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
-	if len(positional) == 0 {
-		return fmt.Errorf("must provide a .pc/.pcf file or a directory to discover")
+	// The config always routes (defaults when the file is absent) — the
+	// target falls back to convert.input so a bare `tuxgo discover` works.
+	cfg, cfgSource, err := loadRunConfig(*configPath)
+	if err != nil {
+		return err
 	}
-	target := positional[0]
-	if *configPath != "" {
-		if _, _, err := loadRunConfig(*configPath); err != nil {
-			return err
+	logConfigRouting(ctx, cfg, cfgSource)
+
+	var target string
+	if len(positional) > 0 {
+		target = positional[0]
+	} else {
+		target = cfg.Convert.Input
+	}
+	if target == "" {
+		return fmt.Errorf("must provide a .pc/.pcf file or directory, or set convert.input in .tuxgo.yaml")
+	}
+
+	mode := *namingMode
+	if *aiFlag {
+		mode = "ai"
+	}
+	if mode == "" {
+		mode = cfg.Discover.Mode
+	}
+	if mode == "" {
+		mode = "auto"
+	}
+	var client llm.Client
+	if mode != "deterministic" {
+		if !cfg.Run.LLM {
+			log.Info("discover: run.llm is false — deterministic naming", "mode", mode)
+		} else if c, cerr := llm.NewFromConfig(ctx, cfg, ""); cerr != nil {
+			log.Warn("discover: llm client unavailable — deterministic naming", "mode", mode, "error", cerr)
+		} else {
+			client = c
+			if mdl, rerr := cfg.Route(""); rerr == nil {
+				log.Info("discover: AI naming enabled — one call per candidate endpoint, deterministic fallback per failure", "mode", mode, "model", mdl.Model)
+			}
 		}
 	}
+	bd := budget.New(cfg.Run.MaxPromptTokens, cfg.Run.MaxOutputTokens, cfg.Run.CharsPerToken)
 
 	fi, err := os.Stat(target)
 	if err != nil {
 		return fmt.Errorf("cannot access target path %s: %w", target, err)
 	}
 	dirMode := fi.IsDir()
-	if dirMode && *outDir == "" {
-		return fmt.Errorf("discover: a directory target needs -out <dir> (one draft per entry)")
-	}
+	out := discoverOutDir(*outDir)
 
 	irFiles, err := extractFlowIR(target)
 	if err != nil {
@@ -58,7 +94,7 @@ func runDiscover(ctx context.Context, args []string) error {
 		return fmt.Errorf("no .pc or .pcf files found in %s", target)
 	}
 
-	written := 0
+	written, existing := 0, 0
 	for _, f := range irFiles {
 		if f.Entry == "" {
 			fmt.Printf("- %s: no entry function (fn library) — skipped\n", filepath.Base(f.Path))
@@ -68,7 +104,7 @@ func runDiscover(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("discover: read %s: %w", f.Path, err)
 		}
-		facts, err := scanner.ScanBytes(src, f.Path)
+		facts, err := scanLikeExtract(src, f)
 		if err != nil {
 			return fmt.Errorf("discover: scan %s: %w", f.Path, err)
 		}
@@ -78,36 +114,69 @@ func runDiscover(ctx context.Context, args []string) error {
 			fmt.Printf("- %s: no API candidates found (%d conditions inspected)\n", f.Entry, len(f.Conditions))
 			continue
 		}
-		draft := renderDraft(f, candidates, dirMode)
-		if dirMode {
-			base := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
-			path := filepath.Join(*outDir, base+".mapping.yaml")
-			if err := os.MkdirAll(*outDir, 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(path, []byte(draft), 0o644); err != nil {
-				return fmt.Errorf("discover: write %s: %w", path, err)
-			}
-			written++
-			log.Info("draft written", "path", path, "candidates", len(candidates))
-		}
+		aiNames := aiNameEndpoints(ctx, log, client, bd, f, tree, candidates, src)
+		draft := renderDraft(f, candidates, dirMode, aiNames)
 		printDiscoverSummary(f, tree, candidates)
-		if !dirMode {
+		if *stdout {
 			fmt.Println()
 			fmt.Println(draft)
+			continue
 		}
+		base := strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path))
+		path := filepath.Join(out, base+".mapping.yaml")
+		if _, err := os.Stat(path); err == nil {
+			// A tagged draft is user work — never clobber it. The fresh
+			// draft lands alongside as "<base> (1).mapping.yaml", first
+			// free number.
+			var alt string
+			for i := 1; ; i++ {
+				cand := filepath.Join(out, fmt.Sprintf("%s (%d).mapping.yaml", base, i))
+				if _, err := os.Stat(cand); os.IsNotExist(err) {
+					alt = cand
+					break
+				}
+			}
+			fmt.Printf("  note: %s kept — writing a fresh draft alongside\n", path)
+			existing++
+			path = alt
+		}
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(draft), 0o644); err != nil {
+			return fmt.Errorf("discover: write %s: %w", path, err)
+		}
+		written++
+		log.Info("draft written", "path", path, "candidates", len(candidates))
+		fmt.Printf("  draft: %s\n", path)
 	}
+	if *stdout {
+		return nil
+	}
+	how := fmt.Sprintf("tuxgo plan %s -mapping <draft>", target)
 	if dirMode {
-		fmt.Printf("\n%d draft(s) written to %s — tag name/route in each, then: tuxgo convert %s -mapping %s\n",
-			written, *outDir, target, *outDir)
+		how = fmt.Sprintf("tuxgo convert %s -mapping %s", target, out)
 	}
+	fmt.Printf("\n%d draft(s) written to %s (%d existing kept) — edit one (tag name/route, fill module/readDBs), then: %s\n",
+		written, out, existing, how)
 	return nil
 }
 
+// discoverOutDir resolves the draft directory: the -out override, else the
+// mappings/ convention next to the working directory.
+func discoverOutDir(flagOut string) string {
+	if flagOut != "" {
+		return flagOut
+	}
+	return "mappings"
+}
+
 // renderDraft emits the mapping draft (DIS-D5): only strict-decodable keys,
-// metadata in comments, `name: ""`/`route: ""` to tag, census comments, and
-// the non-candidates kept (commented) for user control.
-func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool) string {
+// metadata in comments, `name: ""`/`route: ""` to tag (or AI-suggested
+// pre-fills, advisory and editable), census comments, dbMethods pins when
+// the AI proposed them, and the non-candidates kept (commented) for user
+// control.
+func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool, aiNames map[string]aiSuggestion) string {
 	entry := filepath.Base(f.Path)
 	svc := strings.ToLower(strings.ReplaceAll(strings.TrimSuffix(entry, filepath.Ext(entry)), "-", "_"))
 	var sb strings.Builder
@@ -133,7 +202,6 @@ func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool) string {
 	sb.WriteString("#   - EXAMPLE\n")
 	fmt.Fprintf(&sb, "# routeGroup: /%s\n", svc)
 	sb.WriteString("\nendpoints:\n")
-
 	mapped := map[int]string{} // condition index → candidate key ("" when only non-candidate)
 	for _, c := range candidates {
 		n := strings.SplitN(strings.TrimPrefix(c.Key, "c"), ".", 2)[0]
@@ -164,8 +232,24 @@ func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool) string {
 			}
 			sb.WriteString("\n")
 		}
-		sb.WriteString("    name: \"\"                  # TODO tag the Go method name\n")
-		sb.WriteString("    route: \"\"                 # TODO tag the route path (starts with /)\n")
+		sug := aiNames[c.Key]
+		origin := "# TODO tag the Go method name"
+		switch {
+		case sug.Name == "":
+		case sug.Deterministic:
+			origin = "# deterministic — edit freely"
+		default:
+			origin = "# ai-suggested — edit freely"
+		}
+		fmt.Fprintf(&sb, "    name: %-16s %s\n", strconv.Quote(sug.Name), origin)
+		switch {
+		case sug.Route == "":
+			sb.WriteString("    route: \"\"                 # TODO tag the route path (starts with /)\n")
+		case sug.Deterministic:
+			fmt.Fprintf(&sb, "    route: %-15s # deterministic — edit freely\n", strconv.Quote(sug.Route))
+		default:
+			fmt.Fprintf(&sb, "    route: %-15s # ai-suggested — edit freely\n", strconv.Quote(sug.Route))
+		}
 	}
 	// Non-candidates, commented, for control.
 	var rest []int
@@ -182,6 +266,46 @@ func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool) string {
 			fmt.Fprintf(&sb, "# - condition: %-13d # lines %d-%d | reads: %s | writes: %s\n",
 				idx, cond.StartLine, cond.EndLine, fieldsOrDash(gets), fieldsOrDash(adds))
 		}
+	}
+	// dbMethods: AI-proposed pins emit as real (editable) yaml; without
+	// them the commented skeleton lists the query IDs for manual pins.
+	pins := map[string]methodPinSuggestion{}
+	for _, sug := range aiNames {
+		for id, m := range sug.Methods {
+			if _, dup := pins[id]; !dup {
+				pins[id] = m
+			}
+		}
+	}
+	if len(pins) > 0 {
+		sb.WriteString("\ndbMethods:                     # ai-suggested — edit freely; params stay\n")
+		sb.WriteString("                               # deterministic (derived from the query binds)\n")
+		ids := make([]string, 0, len(pins))
+		for id := range pins {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			p := pins[id]
+			if p.Row != "" {
+				fmt.Fprintf(&sb, "  %s: {name: %s, row: %s}\n", id, p.Name, p.Row)
+			} else {
+				fmt.Fprintf(&sb, "  %s: {name: %s}\n", id, p.Name)
+			}
+		}
+		sb.WriteString("# `fn_<name>:<qid>` keys pin queries inside an external fn library file.\n")
+		return sb.String()
+	}
+	var qids []string
+	for _, q := range f.Queries {
+		qids = append(qids, q.ID)
+	}
+	if len(qids) > 0 {
+		sb.WriteString("\n# dbMethods:                   # OPTIONAL per-query method pins (uncomment\n")
+		for _, id := range qids {
+			fmt.Fprintf(&sb, "#   %-24s  # name: GetThing / params: [b:string] / row: ThingRow\n", id+":")
+		}
+		sb.WriteString("# `fn_<name>:<qid>` keys pin queries inside an external fn library file.\n")
 	}
 	return sb.String()
 }
