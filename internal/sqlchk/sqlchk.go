@@ -65,6 +65,40 @@ type Result struct {
 	Deviations []Deviation `json:"deviations,omitempty"`
 }
 
+// CompareTargets is the shared fidelity skeleton (A2.7): for each target,
+// a missing literal is unverifiable (visible, never a silent pass — PF-6.6),
+// otherwise the source and generated SQL compare through the normalizer.
+// The literal extractor is the caller's language-specific half (Go backtick
+// literals, Python triple-quoted constants). The projected identity fields
+// are extracted by the accessor funcs; the lookup returns the generated SQL.
+func CompareTargets[T any](targets []T, lookup func(t T) (gen string, ok bool),
+	method, queryID, source func(t T) string) []Result {
+	results := make([]Result, 0, len(targets))
+	for _, t := range targets {
+		gen, ok := lookup(t)
+		if !ok {
+			results = append(results, Result{
+				Method:  method(t),
+				QueryID: queryID(t),
+				Status:  StatusUnverifiable,
+			})
+			continue
+		}
+		devs := Compare(source(t), gen)
+		status := StatusMatch
+		if len(devs) > 0 {
+			status = StatusDeviated
+		}
+		results = append(results, Result{
+			Method:     method(t),
+			QueryID:    queryID(t),
+			Status:     status,
+			Deviations: devs,
+		})
+	}
+	return results
+}
+
 // CheckDBFile parses the written db-methods file and compares every target
 // method's embedded SQL raw literal against the source SQL through the same
 // normalizer. A method with no extractable literal is unverifiable — a
@@ -76,21 +110,11 @@ func CheckDBFile(path string, targets []Target) ([]Result, error) {
 		return nil, fmt.Errorf("sqlchk: parse %s: %w", path, err)
 	}
 	literals := sqlLiterals(f)
-	results := make([]Result, 0, len(targets))
-	for _, t := range targets {
-		gen, ok := literals[t.Method]
-		if !ok {
-			results = append(results, Result{Method: t.Method, QueryID: t.QueryID, Status: StatusUnverifiable})
-			continue
-		}
-		devs := Compare(t.Source, gen)
-		status := StatusMatch
-		if len(devs) > 0 {
-			status = StatusDeviated
-		}
-		results = append(results, Result{Method: t.Method, QueryID: t.QueryID, Status: status, Deviations: devs})
-	}
-	return results, nil
+	return CompareTargets(targets,
+		func(t Target) (string, bool) { gen, ok := literals[t.Method]; return gen, ok },
+		func(t Target) string { return t.Method },
+		func(t Target) string { return t.QueryID },
+		func(t Target) string { return t.Source }), nil
 }
 
 // sqlLiterals maps each top-level func name to its first backtick raw-string

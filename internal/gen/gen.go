@@ -176,12 +176,14 @@ func (s *Service) requestType(endpoint string) string  { return endpoint + "Requ
 func (s *Service) responseType(endpoint string) string { return endpoint + "Response" }
 
 // RowName derives the models struct carrying one query's result row: the
-// mapping pin's Row when set, else the method name minus its verb.
+// mapping pin's Row when set, else the method name minus its verb. The verb
+// list mirrors plan.methodName's emitted prefixes (Get/Insert/Update/Delete/
+// Merge — A2.6 added Merge, which plan emits for unpinned MERGE units).
 func (s *Service) RowName(queryID, methodName string) string {
 	if pin, ok := s.Pin(queryID); ok && pin.Row != "" {
 		return pin.Row
 	}
-	for _, verb := range []string{"Get", "Insert", "Update", "Delete"} {
+	for _, verb := range []string{"Get", "Insert", "Update", "Delete", "Merge"} {
 		if strings.HasPrefix(methodName, verb) {
 			return strings.TrimPrefix(methodName, verb)
 		}

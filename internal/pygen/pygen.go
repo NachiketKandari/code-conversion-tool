@@ -9,8 +9,6 @@ package pygen
 
 import (
 	"context"
-	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 
@@ -180,25 +178,10 @@ func assembleModule(p *pyplan.Plan, sourcePath, body string) string {
 	return strings.Join(secs, "\n\n") + "\n"
 }
 
-// interpreterGate upgrades the structural gate with python3's ast.parse when
-// an interpreter is on PATH; the outcome is always reported, never faked.
+// interpreterGate upgrades the structural gate with python3's ast.parse via
+// the shared pychk.CheckSource; the outcome is always reported, never faked.
 func interpreterGate(content string) (bool, string, string) {
-	if _, err := exec.LookPath("python3"); err != nil {
-		return false, "unavailable", "python3 not found on PATH"
-	}
-	tmp, err := os.CreateTemp("", "batchpy-*.py")
-	if err != nil {
-		return false, "unavailable", err.Error()
-	}
-	path := tmp.Name()
-	if _, werr := tmp.WriteString(content); werr != nil {
-		tmp.Close()
-		os.Remove(path)
-		return false, "unavailable", werr.Error()
-	}
-	tmp.Close()
-	defer os.Remove(path)
-	return pychk.CheckWithInterpreter(path)
+	return pychk.CheckSource(content)
 }
 
 // placeholderBody is the -no-llm service body (BP-6): a loud, resumable gap.

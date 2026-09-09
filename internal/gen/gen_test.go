@@ -212,6 +212,12 @@ func TestGenMergeDBMethod(t *testing.T) {
 	if mergeUnit.Name != "MergeDemoAccounts" {
 		t.Errorf("deterministic merge method name = %s, want MergeDemoAccounts", mergeUnit.Name)
 	}
+	// A2.6: the fallback row name strips the Merge verb too — before the
+	// fix, RowName kept the verb and the struct would have been
+	// "MergeDemoAccounts" (a method-shaped name in models).
+	if got := s.RowName(mergeUnit.QueryIDs[0], mergeUnit.Name); got != "DemoAccounts" {
+		t.Errorf("merge row name = %s, want DemoAccounts (verb stripped)", got)
+	}
 
 	body, sig, needsSQL, err := s.DBMethod(*mergeUnit)
 	if err != nil {

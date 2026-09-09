@@ -8,6 +8,7 @@
 package pychk
 
 import (
+	"os"
 	"os/exec"
 	"strings"
 
@@ -200,6 +201,28 @@ func CheckWithInterpreter(path string) (ok bool, mode string, detail string) {
 	return true, "ast", ""
 }
 
+// CheckSource is the content-level syntax gate (A2.7): the one owner of the
+// temp-file + interpreter dance — callers pass module content and never
+// touch the interpreter themselves.
+func CheckSource(content string) (ok bool, mode string, detail string) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		return false, "unavailable", "python3 not found on PATH"
+	}
+	tmp, err := os.CreateTemp("", "batchpy-*.py")
+	if err != nil {
+		return false, "unavailable", err.Error()
+	}
+	path := tmp.Name()
+	if _, werr := tmp.WriteString(content); werr != nil {
+		tmp.Close()
+		os.Remove(path)
+		return false, "unavailable", werr.Error()
+	}
+	tmp.Close()
+	defer os.Remove(path)
+	return CheckWithInterpreter(path)
+}
+
 // Literal is one extracted triple-quoted string with its assignment name
 // ("" for inline literals).
 type Literal struct {
@@ -279,6 +302,8 @@ type FidelityTarget struct {
 // Fidelity compares every target's source SQL against the generated module's
 // literal of the same const name through sqlchk.Compare — the same
 // structural projection used for the Go target (PF-6 semantics, BP-8).
+// The compare skeleton is the shared sqlchk.CompareTargets; only the
+// Python triple-quoted literal extractor is local.
 func Fidelity(targets []FidelityTarget, generated string) []sqlchk.Result {
 	byName := map[string]string{}
 	for _, lit := range SQLLiterals(generated) {
@@ -288,19 +313,9 @@ func Fidelity(targets []FidelityTarget, generated string) []sqlchk.Result {
 			}
 		}
 	}
-	results := make([]sqlchk.Result, 0, len(targets))
-	for _, t := range targets {
-		gen, ok := byName[t.Const]
-		if !ok {
-			results = append(results, sqlchk.Result{Method: t.Const, QueryID: t.QueryID, Status: sqlchk.StatusUnverifiable})
-			continue
-		}
-		devs := sqlchk.Compare(t.Source, gen)
-		status := sqlchk.StatusMatch
-		if len(devs) > 0 {
-			status = sqlchk.StatusDeviated
-		}
-		results = append(results, sqlchk.Result{Method: t.Const, QueryID: t.QueryID, Status: status, Deviations: devs})
-	}
-	return results
+	return sqlchk.CompareTargets(targets,
+		func(t FidelityTarget) (string, bool) { gen, ok := byName[t.Const]; return gen, ok },
+		func(t FidelityTarget) string { return t.Const },
+		func(t FidelityTarget) string { return t.QueryID },
+		func(t FidelityTarget) string { return t.Source })
 }
