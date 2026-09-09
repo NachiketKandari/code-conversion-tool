@@ -212,6 +212,32 @@ go run ./cmd/tuxgo gentest <converted service tree> -no-llm -base out/ # determi
 
 Goldens pin the `-no-llm workers=1` output for the synthetic demo service (`testdata/gentest/` → `expected/`, all three layers + the gap report; the fixture tree is local-only — gitignored and purged from history, no example bytes in the repo); regenerate only with a deliberate template/scan change (`GT_UPDATE_GOLDENS=1`, or the gentest command documented above the golden test).
 
+## `flow` — core-logic flow IR + parser accuracy *(PRD 2026-09-10)*
+
+`tuxgo flow <file|dir>` builds the statement-level flow tree (PRD-2026-09-10) from the scanner facts — branches, loops (for/while/do), SQL spans, returns, C declarations, and residual statements nested by block extents — and reports, per function:
+
+- **coverage**: how many of the function's live code lines the deterministic parse classified vs residue (with the residue line numbers — the parser-accuracy instrument);
+- **idiom hints**: fetch-then-iterate (cursor `while(1)`+FETCH → one multi-row store call + `range` over rows), request-guard (Fget32 + error add + return → collapses into the request struct), response-fanout (per-row Fadd32 → response struct mapping), err-op-check-loop (droppable), debug-only-if, occurrence-decode, do-while;
+- **`-go` draft**: the deterministic transpilation draft — guards collapse, fetch loops become `rows, err := <store call>` + `for _, row := range rows`, Tuxedo buffer management/logging elides with a count, and everything untranspilable becomes an explicit `// TODO(line N):` marker (a correct skeleton, never a guess);
+- **`-out` JSON**: the machine twin (trees + coverage + hints).
+
+```sh
+go run ./cmd/tuxgo flow testdata/nav/SVC_DEMO_LIST.pc        # coverage + hints
+go run ./cmd/tuxgo flow tuxExamples/mainTux.pc -go           # + transpilation draft
+go run ./cmd/tuxgo flow <dir> -out flow.json                 # machine twin
+```
+
+Fault tolerance is contractual: malformed input (unbalanced braces, parenless headers, unterminated comments, garbage bytes) degrades to loud residue — never a panic, never silently dropped constructs. `convert` reuses the same trees: with `convert.flowDraft` (default on) the controller prompt carries the endpoint's flow draft as a verified base the LLM enhances — the REQUIRED-CALLS gate is unchanged and `-no-llm` runs stay byte-identical.
+
+## `discover` — endpoint scan-then-tag *(PRD 2026-09-10)*
+
+`tuxgo discover <file|dir>` removes the mapping-yaml authoring burden while keeping the human decision (§4.2.8 — the tool never invents endpoints): it finds the **API candidates** — conditions/blocks enclosing `Fget32` request reads **and** non-error `Fadd32` response writes (error emissions — `FML_ERR_MSG` into the input buffer, "fadd err = returning error" — never count; an if enclosing only error emission is a guard, not an API), including qualifying nested ifs (keyed `c<n>.<k>`; subsets of their parent are marked redundant), and emits a **mapping draft yaml**: `condition: n` / `conditionRef: c<n>.<k>` entries with `name: ""`/`route: ""` to tag, per-candidate read/write/query census comments, non-candidates kept commented-out for control, `service` prefilled. Tag the draft and feed it straight back: `-mapping <file>` (or a directory of tagged drafts in dir mode). An untagged draft fails mapping validation with the tag instruction; existing hand-written `condition: int` mappings are unaffected.
+
+```sh
+go run ./cmd/tuxgo discover testdata/nav/SVC_DEMO_LIST.pc          # draft to stdout
+go run ./cmd/tuxgo discover <dir> -out mappings/                   # one draft per entry
+```
+
 ## Working-directory layout
 
 The agreed runtime layout (where the built binary lives):
@@ -250,7 +276,7 @@ The loader ships (Phase 1) — copy `configs/.tuxgo.example.yaml` to the working
 - `db` — generated DB-layer shape: `withGorm: false` (default) is the plain
   sqlx-only store (`NewXStore(db *sqlx.DB)`); `true` renders the nav-example variant where the store also carries the legacy `*gorm.DB` handle
 - `convert` — default `input` (`.pc`/`.pcf` target) and `mapping` (endpoint
-  YAML) so `tuxgo plan`/`tuxgo convert` run bare; CLI flags override. `fileFilter` scopes **directory** targets to entries whose file name contains the substring (case-insensitive) — e.g. `fileFilter: "mf_"` converts only your `SVC_MF_*.pc` services; empty (default) = every entry. Helper/fn libs never need to match (the full directory set stays in the fn-resolution pool), an explicitly passed file bypasses the filter, and a dir-mode mapping for a filter-excluded entry is skipped with a warning instead of the orphan error
+  YAML) so `tuxgo plan`/`tuxgo convert` run bare; CLI flags override. `fileFilter` scopes **directory** targets to entries whose file name contains the substring (case-insensitive) — e.g. `fileFilter: "mf_"` converts only your `SVC_MF_*.pc` services; empty (default) = every entry. Helper/fn libs never need to match (the full directory set stays in the fn-resolution pool), an explicitly passed file bypasses the filter, and a dir-mode mapping for a filter-excluded entry is skipped with a warning instead of the orphan error. `flowDraft` (default on) feeds the PRD-2026-09-10 deterministic flow-tree draft into the controller prompt for the LLM to enhance — set it `false` for prompt A/B runs; the REQUIRED-CALLS gate is unchanged either way
 - `batchpy` — batch→Python conventions (PRD 2026-09-08): `wrapperModule`
   (`core.db_router`), `routerClass`, `readMode`/`writeMode`, `loggerPrefix` (`app.`), `entrypoint` (`process_daily_batch`), `shape` (`auto|repo`), `dmlLoop` (`batch|rowbyrow`), `chunkSize`, `outDir` (`python_out`), `fileFilter` (same name-substring scoping as `convert.fileFilter`, for batch files); CLI flags override
 - `paths` — `tux/`, the target Go service, and the `conversion_logs/`
@@ -270,15 +296,18 @@ Fixtures live in `testdata/nav/` (`SVC_DEMO_LIST.pc`, `fn_demo_lib.pc`) and `tes
 ## Layout
 
 ```text
-cmd/tuxgo/            CLI (analyze, extract, plan, convert, batchpy, gentest)
+cmd/tuxgo/            CLI (analyze, extract, plan, convert, batchpy, gentest, flow, discover)
 internal/
   audit/              per-run audit trail recorder (conversion_logs/audit/<run-id>/)
   budget/             token ceilings (run.* yaml keys) + query-replacement view —
                       SQL regions → one resolved DB call line (Phase 4)
   config/             .tuxgo.yaml schema, loader, validation, profile routing (Phase 1)
   convert/            conversion orchestrator — ledger-resumable plan execution,
-                      LLM controller bodies via the query-replaced view (Phase 5)
+                      LLM controller bodies via the query-replaced view (Phase 5),
+                      flow-draft AI-enhance seam (PRD 2026-09-10)
   cproc/analyzer/     complexity scoring + CSV export + weights re-scoring
+  cproc/flow/         statement-level flow tree + coverage metric + idiom hints +
+                      deterministic Go transpilation renderer (PRD 2026-09-10)
   cproc/ir/           deterministic IR extraction + QueryType/template marking,
                       condition inventory, external-fn resolution (Phase 2)
   cproc/scanner/      Pro*C statement-level scanner (EXEC SQL, calls, defs, directives,

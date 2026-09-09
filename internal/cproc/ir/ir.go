@@ -72,7 +72,11 @@ const (
 // Dropped marks session/error plumbing that never reaches generated models
 // (§4.8.4: FML_USER_ID/FML_SESSION_ID handled by middleware, FML_ERR_MSG becomes
 // the returned error). Buffer names the buffer variable the op targeted
-// (PF-4.2), resolvable against File.Buffers for its role.
+// (PF-4.2), resolvable against File.Buffers for its role. Error marks an
+// error-emission add (PRD-2026-09-10 endpoint discovery): the op writes an
+// ERR field or targets the input/send buffer — "fadd err = returning error".
+// Only flow-discovered candidate conditions set it (DIS-D1); inventory
+// conditions keep the flag unset so existing outputs never change.
 type FmlOp struct {
 	Kind     FmlOpKind `json:"kind"`
 	Field    string    `json:"field"`
@@ -81,6 +85,7 @@ type FmlOp struct {
 	Line     int       `json:"line"`
 	Optional bool      `json:"optional,omitempty"`
 	Dropped  bool      `json:"dropped,omitempty"`
+	Error    bool      `json:"error,omitempty"`
 }
 
 // FmlBufferRole names the data-flow role of an FML buffer variable

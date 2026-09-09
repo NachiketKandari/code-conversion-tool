@@ -147,6 +147,46 @@ type Branch struct {
 	Function      string // enclosing function name ("" when outside any body)
 }
 
+// LoopKind names the loop role of a loop record. A do-while is one record:
+// the `do` header opens it and the tail `while(cond)` fills Cond/WhileLine.
+type LoopKind string
+
+const (
+	LoopFor   LoopKind = "for"
+	LoopWhile LoopKind = "while"
+	LoopDo    LoopKind = "do"
+)
+
+// Loop records one for/while/do loop header and its block extent at any
+// nesting depth (FLW-1, additive — mirrors Branch). Cond is the header's
+// paren text ("" for a do until its tail while fills it; a for header keeps
+// its whole `init; cond; incr` text). WhileLine is the do-while tail
+// condition's line (0 otherwise). NestDepth is the number of enclosing
+// branch/loop block extents containing the header. Unbraced bodies create
+// no block extent (documented approximation, same as Branch).
+type Loop struct {
+	Kind          LoopKind
+	Cond          string
+	StartLine     int
+	StartCol      int
+	BlockStart    int // line of the block's opening brace (0 when unbraced)
+	BlockEnd      int // line of the block's closing brace (0 when unbraced)
+	BlockStartCol int
+	BlockEndCol   int
+	Depth         int    // brace depth at the keyword (function body top level == 1)
+	NestDepth     int    // enclosing branch/loop blocks (FLW-1)
+	WhileLine     int    // do-while tail condition line (0 for for/while)
+	Function      string // enclosing function name ("" when outside any body)
+}
+
+// Return records one `return` statement site (FLW-1, additive). tpreturn is
+// an ATMI call, not a C return — it rides in Calls as always.
+type Return struct {
+	Line int
+	Col  int
+	Func string // enclosing function name ("" when outside any body)
+}
+
 // VarDecl records a variable declaration whose base type is one of the
 // recognized C/Pro*C base types (char, int, long, short, double, float,
 // varchar, …). Types from project headers (e.g. EXEC SQL include table/*.h)
@@ -234,6 +274,8 @@ type SourceFacts struct {
 	AllSQL      []ExecSQLStatement
 	Queries     []ExecSQLStatement
 	Branches    []Branch
+	Loops       []Loop
+	Returns     []Return
 	VarDecls    []VarDecl
 	Comments    []Comment
 	Unbalanced  []UnbalancedRegion

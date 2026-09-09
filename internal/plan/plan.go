@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
+	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
 )
 
 // Kind classifies a generation unit.
@@ -101,7 +103,30 @@ func Build(opts Options) (*Plan, error) {
 	for i := range opts.Main.Conditions {
 		condBy[opts.Main.Conditions[i].Index] = &opts.Main.Conditions[i]
 	}
+	// Discovery resolution (PRD-2026-09-10): conditionRef endpoints resolve
+	// through the flow tree, built lazily and at most once.
+	var flowTree *flow.Tree
+	condRef := func(ref string) (*ir.Condition, error) {
+		if flowTree == nil {
+			if strings.TrimSpace(opts.Source) == "" {
+				return nil, fmt.Errorf("plan: endpoint references candidate %s but no source is available to re-derive the flow tree", ref)
+			}
+			facts, err := scanner.ScanBytes([]byte(opts.Source), opts.Main.Path)
+			if err != nil {
+				return nil, fmt.Errorf("plan: flow tree for candidate %s: %w", ref, err)
+			}
+			flowTree = flow.Build([]byte(opts.Source), facts, opts.Main.Entry, opts.Main)
+		}
+		c, err := flow.ConditionFor(flowTree, opts.Main.Conditions, ref)
+		if err != nil {
+			return nil, fmt.Errorf("plan: %w", err)
+		}
+		return c, nil
+	}
 	cond := func(e Endpoint) (*ir.Condition, error) {
+		if e.ConditionRef != "" {
+			return condRef(e.ConditionRef)
+		}
 		c, ok := condBy[e.Condition]
 		if !ok {
 			err := fmt.Errorf("plan: endpoint %s maps condition %d — inventory has %d conditions",

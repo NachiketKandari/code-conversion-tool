@@ -344,3 +344,25 @@ func promptOf(t *testing.T, req map[string]any) string {
 	}
 	return sb.String()
 }
+
+// TestBuildPromptFlowDraft pins the FLW-D7 seam: the deterministic draft is
+// an additive prompt section, present only when rendered — the legacy view,
+// DB contract, and REQUIRED CALLS sections are unchanged either way.
+func TestBuildPromptFlowDraft(t *testing.T) {
+	view := budget.View{Source: "legacy C branch"}
+	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "")
+	if strings.Contains(prompt, "Deterministic flow draft") {
+		t.Error("empty draft must not add the flow section")
+	}
+	if !strings.Contains(prompt, "legacy C branch") {
+		t.Error("legacy view missing from the prompt")
+	}
+	withDraft := buildPrompt(view, "db contract", "struct contract", "NavHistory", "\trows, err := s.store.GetNavHistory(c)")
+	if !strings.Contains(withDraft, "Deterministic flow draft") ||
+		!strings.Contains(withDraft, "s.store.GetNavHistory(c)") {
+		t.Errorf("draft section missing:\n%s", withDraft)
+	}
+	if !strings.Contains(withDraft, "keep the flow and every store call") {
+		t.Error("draft instruction line missing")
+	}
+}

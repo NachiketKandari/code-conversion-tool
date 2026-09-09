@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
+	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
 	"github.com/Public/convert-tux-to-go/internal/plan"
 	"github.com/Public/convert-tux-to-go/internal/templates"
 )
@@ -22,6 +24,10 @@ type Options struct {
 	Plan    *plan.Plan
 	Main    *ir.File
 	FnFiles []*ir.File
+	// Source is the entry file's text — required only when the mapping
+	// references discovery candidates (conditionRef): their conditions are
+	// re-derived from the flow tree (PRD-2026-09-10 endpoint discovery).
+	Source string
 	// WithGorm renders the store with the legacy *gorm.DB handle alongside
 	// sqlx (db.withGorm); default is the plain sqlx-only store.
 	WithGorm bool
@@ -38,6 +44,8 @@ type Service struct {
 	structLower string               // navController / navHandler receiver base
 	queries     map[string]*ir.Query // namespaced ID → query (main + fn files)
 	hostVars    map[string]ir.HostVar
+	source      string     // entry source text (conditionRef resolution)
+	flowTree    *flow.Tree // lazily built when a conditionRef endpoint appears
 }
 
 // NewService derives the naming context from the plan and IR.
@@ -52,7 +60,7 @@ func NewService(o Options) (*Service, error) {
 	if o.Plan == nil || o.Main == nil {
 		return nil, fmt.Errorf("gen: plan and main IR are required")
 	}
-	s := &Service{Mapping: o.Plan.Mapping, Main: o.Main, WithGorm: o.WithGorm}
+	s := &Service{Mapping: o.Plan.Mapping, Main: o.Main, WithGorm: o.WithGorm, source: o.Source}
 	s.ModelsPkg = s.Mapping.ImportPath("models")
 	s.Module = strings.SplitN(s.Mapping.Module, "/", 2)[0]
 	s.If = exportName(s.Mapping.Service)
@@ -221,12 +229,14 @@ func (s *Service) hostType(hostVar, dbTag string) string {
 
 // requestFields / responseFields derive the endpoint's contract structs from
 // the branch's FML ops (decision 10: Fget32 = inputs, Fadd32 = outputs;
-// dropped session/error plumbing never reaches models, §4.8.4).
+// dropped session/error plumbing never reaches models, §4.8.4). Error ops
+// (PRD-2026-09-10 discovery) are error emissions — "fadd err = returning
+// error" — never contract fields.
 func contractFields(ops []ir.FmlOp, kind ir.FmlOpKind) []templates.FieldSpec {
 	fields := make([]templates.FieldSpec, 0, len(ops))
 	seen := map[string]bool{}
 	for _, op := range ops {
-		if op.Dropped || op.Kind != kind || seen[op.Field] {
+		if op.Dropped || op.Error || op.Kind != kind || seen[op.Field] {
 			continue
 		}
 		seen[op.Field] = true
@@ -304,6 +314,27 @@ func (s *Service) ModelFile(p *plan.Plan) (string, error) {
 }
 
 func (s *Service) conditionOf(e plan.Endpoint) *ir.Condition {
+	if e.ConditionRef != "" {
+		// Discovery candidate (PRD-2026-09-10): re-derive the synthesized
+		// condition from the flow tree. Degrade to nil (caller skips the
+		// endpoint's structs) on any failure — the plan already validated
+		// the ref, so this is defensive only.
+		if s.flowTree == nil {
+			if strings.TrimSpace(s.source) == "" {
+				return nil
+			}
+			facts, err := scanner.ScanBytes([]byte(s.source), s.Main.Path)
+			if err != nil {
+				return nil
+			}
+			s.flowTree = flow.Build([]byte(s.source), facts, s.Main.Entry, s.Main)
+		}
+		c, err := flow.ConditionFor(s.flowTree, s.Main.Conditions, e.ConditionRef)
+		if err != nil {
+			return nil
+		}
+		return c
+	}
 	for i := range s.Main.Conditions {
 		if s.Main.Conditions[i].Index == e.Condition {
 			return &s.Main.Conditions[i]

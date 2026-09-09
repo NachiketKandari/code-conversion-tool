@@ -929,6 +929,13 @@ func fmlOpsInRange(facts *scanner.SourceFacts, entry string, start, end int) []F
 	return out
 }
 
+// FmlOpOf exports the Fget32/Fadd32 classifier for consumers outside the ir
+// package (FLW-2: the flow statement tree tags FML ops without re-deriving
+// the call shape). See fmlOpOf for the argument conventions.
+func FmlOpOf(call *scanner.FunctionCall, facts *scanner.SourceFacts) (FmlOp, bool) {
+	return fmlOpOf(call, facts)
+}
+
 // fmlOpOf converts an Fget32/Fadd32 call into an FmlOp: field = arg 2,
 // target = the host variable written (get, arg 4) or read (add, arg 3),
 // buffer = the buffer variable the op ran on (PF-4.2, arg 1).

@@ -29,10 +29,23 @@ type MethodPin struct {
 // Endpoint is one user-mapped condition: the IR condition inventory index
 // (1-based) promoted to an API endpoint with a user-chosen Go method name
 // and route path (§4.2.8 — the tool never decides endpoint-ness).
+// ConditionRef is the discovery alternative (PRD-2026-09-10): a stable
+// candidate key from `tuxgo discover` — "c<n>" for a top-level condition,
+// "c<n>.<k>" for a qualifying nested branch. Exactly one of the two must be
+// set.
 type Endpoint struct {
-	Condition int    `yaml:"condition"`
-	Name      string `yaml:"name"`
-	Route     string `yaml:"route"`
+	Condition    int    `yaml:"condition"`
+	ConditionRef string `yaml:"conditionRef"`
+	Name         string `yaml:"name"`
+	Route        string `yaml:"route"`
+}
+
+// RefOrIndex reports the endpoint's condition reference for error messages.
+func (e Endpoint) RefOrIndex() string {
+	if e.ConditionRef != "" {
+		return e.ConditionRef
+	}
+	return fmt.Sprintf("condition %d", e.Condition)
 }
 
 // Mapping is the user-specified conversion mapping (F3 run input): the
@@ -94,15 +107,26 @@ func (m *Mapping) Validate() error {
 		return fmt.Errorf("at least one endpoint must be mapped — the tool never invents endpoints (§4.2.8)")
 	}
 	conds := map[int]bool{}
+	refs := map[string]bool{}
 	names := map[string]bool{}
 	for i, e := range m.Endpoints {
-		if e.Condition < 1 {
-			return fmt.Errorf("endpoints[%d].condition must be a 1-based inventory index", i)
+		if (e.Condition >= 1) == (e.ConditionRef != "") {
+			return fmt.Errorf("endpoints[%d] (%s): exactly one of condition (1-based inventory index) or conditionRef (discover candidate key) must be set", i, e.Name)
 		}
-		if conds[e.Condition] {
-			return fmt.Errorf("endpoints[%d]: condition %d mapped twice", i, e.Condition)
+		if e.ConditionRef != "" {
+			if refs[e.ConditionRef] {
+				return fmt.Errorf("endpoints[%d]: candidate %s mapped twice", i, e.ConditionRef)
+			}
+			refs[e.ConditionRef] = true
+		} else {
+			if e.Condition < 1 {
+				return fmt.Errorf("endpoints[%d].condition must be a 1-based inventory index", i)
+			}
+			if conds[e.Condition] {
+				return fmt.Errorf("endpoints[%d]: condition %d mapped twice", i, e.Condition)
+			}
+			conds[e.Condition] = true
 		}
-		conds[e.Condition] = true
 		if !token.IsIdentifier(e.Name) {
 			return fmt.Errorf("endpoints[%d].name %q is not a valid Go identifier", i, e.Name)
 		}

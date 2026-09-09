@@ -82,6 +82,16 @@ func main() {
 			log.Error("gentest failed", "error", err)
 			os.Exit(1)
 		}
+	case "flow":
+		if err := runFlow(ctx, rest[1:]); err != nil {
+			log.Error("flow failed", "error", err)
+			os.Exit(1)
+		}
+	case "discover":
+		if err := runDiscover(ctx, rest[1:]); err != nil {
+			log.Error("discover failed", "error", err)
+			os.Exit(1)
+		}
 	case "version":
 		fmt.Printf("tuxgo version %s\n", version)
 	case "help", "-h", "--help":
@@ -193,6 +203,13 @@ Available Commands:
   gentest      Generate db/controller/handler Go tests for a converted service
                tree (post-conversion: file | layer dir | service dir | services
                root; -check-only reports the function test gap)
+  flow         Flow-IR accuracy report for a .pc/.pcf file or directory:
+               per-function statement coverage, idiom hints, and (with -go)
+               the deterministic Go transpilation draft
+  discover     Scan-then-tag endpoint discovery: find the API candidates
+               (conditions enclosing Fget32 reads + non-error Fadd32
+               writes), emit a mapping draft yaml per entry, and tag
+               name/route before plan/convert consume it
   version      Print version information
 
 `)

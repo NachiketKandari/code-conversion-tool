@@ -70,6 +70,7 @@ func Default() *Config {
 		Buffers:     DefaultBuffers(),
 		Paths:       DefaultPaths(),
 		Batchpy:     DefaultBatchpy(),
+		Convert:     Convert{FlowDraft: ptrb(true)},
 	}
 }
 
@@ -95,6 +96,8 @@ func DefaultBuffers() Buffers {
 }
 
 func ptr(f float64) *float64 { return &f }
+
+func ptrb(b bool) *bool { return &b }
 
 // Load reads path (typically .tuxgo.yaml in the working directory), overlays
 // it on the defaults (absent sections keep their default values), and
@@ -343,6 +346,11 @@ type Convert struct {
 	// the directory. Applies only when the target is a directory; an
 	// explicitly passed file always converts.
 	FileFilter string `yaml:"fileFilter"`
+	// FlowDraft feeds the deterministic flow-tree transpilation draft
+	// (PRD-2026-09-10) into the controller prompt as a verified base the
+	// LLM enhances instead of translating the raw C from scratch. The
+	// REQUIRED-CALLS gate is unchanged; kill-switch for prompt A/B runs.
+	FlowDraft *bool `yaml:"flowDraft"`
 }
 
 // ValidateCfg configures the bounded gofmt/build/vet/test retry loop (G6)

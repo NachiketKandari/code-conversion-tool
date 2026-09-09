@@ -51,6 +51,7 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 	// close become UnbalancedRegion facts (PF-1.4) instead of truncating.
 	s.scan()
 	assignIfNesting(s.branches)
+	assignLoopNesting(s.loops, s.branches)
 
 	// Editor-style line count: a final line without a trailing newline counts.
 	numLines := bytes.Count(src, []byte{'\n'})
@@ -77,6 +78,8 @@ func ScanBytes(src []byte, path string) (*SourceFacts, error) {
 		AllSQL:      s.allSQL,
 		Queries:     s.queries,
 		Branches:    s.branches,
+		Loops:       s.loops,
+		Returns:     s.returns,
 		VarDecls:    s.varDecls,
 		Comments:    s.comments,
 		Unbalanced:  s.unbalanced,
@@ -117,6 +120,52 @@ func assignIfNesting(branches []Branch) {
 		}
 		b.NestDepth = depth
 	}
+}
+
+// assignLoopNesting sets each loop header's nesting depth (FLW-1): the
+// number of enclosing branch/loop block extents strictly containing the
+// header's position. Computed as a post-pass over both records so the
+// tokenizer stays single-pass; containment is shift-invariant, so fragment
+// rebasing cannot invalidate it.
+func assignLoopNesting(loops []Loop, branches []Branch) {
+	for i := range loops {
+		l := &loops[i]
+		depth := 0
+		for j := range branches {
+			e := &branches[j]
+			if e.Kind == BranchElse || e.BlockStart == 0 || e.BlockEnd == 0 {
+				continue
+			}
+			if posAfter(l.StartLine, l.StartCol, e.StartLine, e.StartCol) &&
+				posBefore(l.StartLine, l.StartCol, e.BlockEnd, e.BlockEndCol) {
+				depth++
+			}
+		}
+		for j := range loops {
+			if j == i {
+				continue
+			}
+			e := &loops[j]
+			if e.BlockStart == 0 || e.BlockEnd == 0 {
+				continue
+			}
+			if posAfter(l.StartLine, l.StartCol, e.StartLine, e.StartCol) &&
+				posBefore(l.StartLine, l.StartCol, e.BlockEnd, e.BlockEndCol) {
+				depth++
+			}
+		}
+		l.NestDepth = depth
+	}
+}
+
+// posAfter reports whether position (l, c) is strictly after (ol, oc).
+func posAfter(l, c, ol, oc int) bool {
+	return l > ol || (l == ol && c > oc)
+}
+
+// posBefore reports whether position (l, c) is strictly before (el, ec).
+func posBefore(l, c, el, ec int) bool {
+	return l < el || (l == el && c < ec)
 }
 
 // ScanFragment parses a lone code fragment (PF-3.2) — typically one branch
@@ -186,6 +235,16 @@ func rebaseLines(facts *SourceFacts, delta int) {
 		b.BlockStart += delta
 		b.BlockEnd += delta
 	}
+	for i := range facts.Loops {
+		l := &facts.Loops[i]
+		l.StartLine += delta
+		l.BlockStart += delta
+		l.BlockEnd += delta
+		l.WhileLine += delta
+	}
+	for i := range facts.Returns {
+		facts.Returns[i].Line += delta
+	}
 	for i := range facts.VarDecls {
 		facts.VarDecls[i].Line += delta
 	}
@@ -213,6 +272,8 @@ type scannerState struct {
 	allSQL      []ExecSQLStatement
 	queries     []ExecSQLStatement
 	branches    []Branch
+	loops       []Loop
+	returns     []Return
 	varDecls    []VarDecl
 	comments    []Comment
 	unbalanced  []UnbalancedRegion
@@ -226,6 +287,8 @@ type scannerState struct {
 	pendingFn   int    // index into functions awaiting its body brace (-1 none)
 	curFn       int    // index of the function whose body we are inside (-1 none)
 	pendingType string // base type seen, awaiting a declarator ("" none)
+
+	pendingDos []int // stack of do-loop indices (into loops) awaiting their tail while
 }
 
 func (s *scannerState) fnName(idx int) string {
@@ -366,6 +429,14 @@ func (s *scannerState) scan() {
 				s.recordIfBranch(kind, startLine, startCol, s.braceDepth)
 			} else if ident == "else" {
 				s.recordElseBranch(startLine, startCol, s.braceDepth)
+			} else if ident == "while" {
+				s.recordWhile(startLine, startCol, s.braceDepth)
+			} else if ident == "for" {
+				s.recordLoop(LoopFor, startLine, startCol, s.braceDepth)
+			} else if ident == "do" {
+				s.recordDo(startLine, startCol, s.braceDepth)
+			} else if ident == "return" {
+				s.returns = append(s.returns, Return{Line: startLine, Col: startCol, Func: s.fnName(s.curFn)})
 			} else if s.pos < s.len && s.src[s.pos] == '(' {
 				// A call or a definition — either way any pending type
 				// context is done (e.g. `long fn_x(...)` is a def).
@@ -1008,6 +1079,83 @@ func (s *scannerState) recordElseBranch(startLine, startCol, depth int) {
 		Depth:         depth,
 		Function:      s.fnName(s.curFn),
 	})
+}
+
+// recordWhile captures a while loop — or, when a do-loop's block has just
+// closed, the do-while tail condition (merged into the do record, never a
+// second loop). An unbraced do (no block extent) always claims the next
+// while as its tail — documented approximation.
+func (s *scannerState) recordWhile(startLine, startCol, depth int) {
+	if n := len(s.pendingDos); n > 0 {
+		do := &s.loops[s.pendingDos[n-1]]
+		afterBlock := do.BlockEnd == 0 ||
+			startLine > do.BlockEnd ||
+			(startLine == do.BlockEnd && startCol > do.BlockEndCol)
+		if afterBlock {
+			off := s.skipReadOnly(s.pos)
+			if off < s.len && s.src[off] == '(' {
+				inner := s.balancedParenText(off)
+				do.Cond = strings.Join(strings.Fields(inner), " ")
+				do.WhileLine = startLine
+			}
+			s.pendingDos = s.pendingDos[:n-1]
+			return
+		}
+	}
+	s.recordLoop(LoopWhile, startLine, startCol, depth)
+}
+
+// recordLoop captures one for/while header and its block. Read-only: the
+// main loop rescans the region normally afterwards.
+func (s *scannerState) recordLoop(kind LoopKind, startLine, startCol, depth int) {
+	off := s.skipReadOnly(s.pos)
+	if off >= s.len || s.src[off] != '(' {
+		return
+	}
+	inner := s.balancedParenText(off)
+	cond := strings.Join(strings.Fields(inner), " ")
+	blockStart, blockStartCol, blockEnd, blockEndCol := 0, 0, 0, 0
+	// off: '(' at off, inner between, close paren at off+1+len(inner).
+	if end := off + 2 + len(inner); end <= s.len {
+		if open := s.skipReadOnly(end); open < s.len && s.src[open] == '{' {
+			blockStart, blockStartCol, blockEnd, blockEndCol, _ = s.blockExtent(open)
+		}
+	}
+	s.loops = append(s.loops, Loop{
+		Kind:          kind,
+		Cond:          cond,
+		StartLine:     startLine,
+		StartCol:      startCol,
+		BlockStart:    blockStart,
+		BlockEnd:      blockEnd,
+		BlockStartCol: blockStartCol,
+		BlockEndCol:   blockEndCol,
+		Depth:         depth,
+		Function:      s.fnName(s.curFn),
+	})
+}
+
+// recordDo captures a do loop header and its block; the tail while(cond)
+// fills Cond/WhileLine later (recordWhile). A `do` is recorded even when
+// unbraced so its tail can still merge.
+func (s *scannerState) recordDo(startLine, startCol, depth int) {
+	off := s.skipReadOnly(s.pos)
+	blockStart, blockStartCol, blockEnd, blockEndCol := 0, 0, 0, 0
+	if off < s.len && s.src[off] == '{' {
+		blockStart, blockStartCol, blockEnd, blockEndCol, _ = s.blockExtent(off)
+	}
+	s.loops = append(s.loops, Loop{
+		Kind:          LoopDo,
+		StartLine:     startLine,
+		StartCol:      startCol,
+		BlockStart:    blockStart,
+		BlockEnd:      blockEnd,
+		BlockStartCol: blockStartCol,
+		BlockEndCol:   blockEndCol,
+		Depth:         depth,
+		Function:      s.fnName(s.curFn),
+	})
+	s.pendingDos = append(s.pendingDos, len(s.loops)-1)
 }
 
 // recordVarDecl records a declarator for the pending base type when the next

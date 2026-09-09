@@ -22,7 +22,9 @@ import (
 
 	"github.com/Public/convert-tux-to-go/internal/audit"
 	"github.com/Public/convert-tux-to-go/internal/budget"
+	"github.com/Public/convert-tux-to-go/internal/cproc/flow"
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
+	"github.com/Public/convert-tux-to-go/internal/cproc/scanner"
 	"github.com/Public/convert-tux-to-go/internal/gen"
 	"github.com/Public/convert-tux-to-go/internal/ledger"
 	"github.com/Public/convert-tux-to-go/internal/llm"
@@ -52,6 +54,11 @@ type Options struct {
 	// WithGorm renders the store with the legacy *gorm.DB handle alongside
 	// sqlx (db.withGorm); default is the plain sqlx-only store.
 	WithGorm bool
+	// FlowDraft feeds the deterministic flow-tree transpilation draft
+	// (PRD-2026-09-10 FLW-D7) into the controller prompt as a verified base
+	// the LLM enhances; false keeps the legacy prompt. The REQUIRED-CALLS
+	// gate is unchanged either way.
+	FlowDraft bool
 }
 
 // Result summarizes one convert run.
@@ -75,7 +82,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Plan == nil || opts.Main == nil || opts.Ledger == nil || opts.Validator == nil {
 		return nil, fmt.Errorf("convert: plan, main IR, ledger and validator are required")
 	}
-	svc, err := gen.NewService(gen.Options{Plan: opts.Plan, Main: opts.Main, FnFiles: opts.FnFiles, WithGorm: opts.WithGorm})
+	svc, err := gen.NewService(gen.Options{Plan: opts.Plan, Main: opts.Main, FnFiles: opts.FnFiles, WithGorm: opts.WithGorm, Source: opts.Source})
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +283,11 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 	if err != nil {
 		return "", "", err
 	}
-	prompt = buildPrompt(view, dbContract, contract, u.Name)
+	draft := ""
+	if opts.FlowDraft {
+		draft = flowDraft(opts, svc, c)
+	}
+	prompt = buildPrompt(view, dbContract, contract, u.Name, draft)
 
 	if err := opts.Budget.CheckInput(prompt); err != nil {
 		return "", "", fmt.Errorf("convert: %w — trim the mapping or raise run.maxPromptTokens", err)
@@ -344,11 +355,60 @@ Rules:
 - Preserve the branch's control flow exactly as the view shows it — same loops, same branches, same order. Do not summarize, elide, merge, or reorder. A branch that looks dead still gets implemented. Every store call shown in the branch view MUST appear in the body, under the same condition.
 - On error return nil, err; on success return data, err.`
 
+// flowDraft renders the deterministic transpilation draft for one endpoint's
+// condition slice (PRD-2026-09-10 FLW-D7): the entry function's flow tree
+// span-limited to the condition, with plan-backed store calls. Any failure
+// degrades to an empty draft — the seam is additive, never fatal.
+func flowDraft(opts Options, svc *gen.Service, c *ir.Condition) string {
+	if opts.Main == nil || opts.Source == "" {
+		return ""
+	}
+	facts, err := scanner.ScanBytes([]byte(opts.Source), opts.Main.Path)
+	if err != nil {
+		return ""
+	}
+	tree := flow.Build([]byte(opts.Source), facts, opts.Main.Entry, opts.Main)
+	if len(tree.Root) == 0 {
+		return ""
+	}
+	_, calls, err := svc.BranchCalls(c, opts.Plan)
+	if err != nil {
+		calls = nil // placeholder store calls, never a run failure
+	}
+	out := flow.RenderSpan(tree, planResolver{svc: svc, calls: calls}, c.StartLine, c.EndLine, 2)
+	return strings.TrimRight(out.Body, "\n")
+}
+
+// planResolver adapts the plan's store calls and row names to the flow
+// renderer's Resolver (FLW-D5).
+type planResolver struct {
+	svc   *gen.Service
+	calls map[string]budget.DBCall
+}
+
+func (r planResolver) StoreCall(qid string) (string, bool) {
+	c, ok := r.calls[qid]
+	if !ok {
+		return "", false
+	}
+	args := append([]string{c.CtxName}, c.Args...)
+	return c.Receiver + "." + c.Name + "(" + strings.Join(args, ", ") + ")", true
+}
+
+func (r planResolver) RowType(qid string) (string, bool) {
+	c, ok := r.calls[qid]
+	if !ok {
+		return "", false
+	}
+	return "*models." + r.svc.RowName(qid, c.Name), true
+}
+
 // buildPrompt assembles the deterministic context: rewritten branch view,
-// DB contract, the fixed signature + verbatim struct definitions, and the
+// DB contract, the fixed signature + verbatim struct definitions, the
 // required-call contract (every store call the view shows is a must-call —
-// a dropped sub-flow is a gate rejection, never a silent gap).
-func buildPrompt(view budget.View, dbContract, contract, endpoint string) string {
+// a dropped sub-flow is a gate rejection, never a silent gap), and — when
+// rendered — the deterministic flow draft the LLM enhances.
+func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
 	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
@@ -358,6 +418,9 @@ func buildPrompt(view budget.View, dbContract, contract, endpoint string) string
 	}
 	sb.WriteString("Fixed method signature and verbatim struct definitions (parameter and field names must match exactly):\n" + contract + "\n\n")
 	sb.WriteString("Legacy branch, with every SQL block already replaced by its store call:\n\n" + view.Source + "\n")
+	if draft != "" {
+		sb.WriteString("\nDeterministic flow draft (parsed from the control flow — verify it, fix field mappings, keep the flow and every store call):\n" + draft + "\n")
+	}
 	return sb.String()
 }
 

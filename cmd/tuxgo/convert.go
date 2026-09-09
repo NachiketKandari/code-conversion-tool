@@ -180,6 +180,7 @@ func convertOneService(ctx context.Context, w *convertWiring, main *ir.File, fil
 		Ledger: led, Validator: w.validator, MaxRetries: w.cfg.ValidateCfg.MaxRetries, Audit: w.audit,
 		Workers: workers,
 		SkipLLM: !w.llmEnabled, WithGorm: w.cfg.DB.WithGorm,
+		FlowDraft: w.cfg.Convert.FlowDraft == nil || *w.cfg.Convert.FlowDraft,
 	})
 	if err != nil {
 		return nil, nil, err
