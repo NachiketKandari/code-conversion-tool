@@ -15,6 +15,7 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/cproc/ir"
 	"github.com/Public/convert-tux-to-go/internal/goast"
 	"github.com/Public/convert-tux-to-go/internal/plan"
+	"github.com/Public/convert-tux-to-go/internal/profile"
 	"github.com/Public/convert-tux-to-go/internal/templates"
 )
 
@@ -44,8 +45,19 @@ type Service struct {
 	structLower string               // navController / navHandler receiver base
 	queries     map[string]*ir.Query // namespaced ID → query (main + fn files)
 	hostVars    map[string]ir.HostVar
-	source      string     // entry source text (conditionRef resolution)
-	flowTree    *flow.Tree // lazily built when a conditionRef endpoint appears
+	source      string          // entry source text (conditionRef resolution)
+	flowTree    *flow.Tree      // lazily built when a conditionRef endpoint appears
+	prof        profile.Profile // target conventions (nil = gonav default)
+}
+
+// Profile returns the service's target profile; the gonav default when
+// unset (the zero-config default — P1: naming conventions read from the
+// profile).
+func (s *Service) Profile() profile.Profile {
+	if s.prof == nil {
+		return profile.Default()
+	}
+	return s.prof
 }
 
 // NewService derives the naming context from the plan and IR.
@@ -144,9 +156,13 @@ func fieldFromFML(fml string) string {
 }
 
 // camelLower renders snake_case host var names as lowerCamelCase Go names.
-// requestType / responseType / rowType naming conventions.
-func (s *Service) requestType(endpoint string) string  { return endpoint + "Request" }
-func (s *Service) responseType(endpoint string) string { return endpoint + "Response" }
+// requestType / responseType / rowType naming conventions — delegated to
+// the target profile (P1: gonav renders today's conventions verbatim, so
+// goldens hold; a second profile renders its own).
+func (s *Service) requestType(endpoint string) string { return s.Profile().Naming().Request(endpoint) }
+func (s *Service) responseType(endpoint string) string {
+	return s.Profile().Naming().Response(endpoint)
+}
 
 // RowName derives the models struct carrying one query's result row: the
 // mapping pin's Row when set, else the method name minus its verb. The verb
@@ -156,12 +172,7 @@ func (s *Service) RowName(queryID, methodName string) string {
 	if pin, ok := s.Pin(queryID); ok && pin.Row != "" {
 		return pin.Row
 	}
-	for _, verb := range []string{"Get", "Insert", "Update", "Delete", "Merge"} {
-		if strings.HasPrefix(methodName, verb) {
-			return strings.TrimPrefix(methodName, verb)
-		}
-	}
-	return methodName
+	return s.Profile().Naming().Row(methodName)
 }
 
 // rowFields derives the row struct's fields from the FETCH-INTO host vars.

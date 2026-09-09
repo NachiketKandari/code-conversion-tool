@@ -26,12 +26,24 @@ import (
 	"github.com/Public/convert-tux-to-go/internal/ledger"
 	"github.com/Public/convert-tux-to-go/internal/llm"
 	"github.com/Public/convert-tux-to-go/internal/plan"
+	"github.com/Public/convert-tux-to-go/internal/profile"
 	"github.com/Public/convert-tux-to-go/internal/telemetry"
 	"github.com/Public/convert-tux-to-go/internal/validate"
 )
 
+// receiverOf resolves the run's store-receiver convention (P1: the profile
+// DB rules; gonav default).
+func receiverOf(opts Options) string {
+	if opts.prof != nil {
+		return opts.prof.DB().StoreReceiver
+	}
+	return profile.Default().DB().StoreReceiver
+}
+
 // Options carries one convert run's wiring.
 type Options struct {
+	// prof selects the target conventions (P1); nil = gonav default.
+	prof       profile.Profile
 	Plan       *plan.Plan
 	Main       *ir.File
 	Source     string
@@ -312,7 +324,7 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 		Extract: cleanBody,
 		Gate: func(body string) []string {
 			verr := validateBody(opts, body)
-			return append(verr, requiredCallErrs(view.Source, body)...)
+			return append(verr, requiredCallErrs(view.Source, body, receiverOf(opts))...)
 		},
 	})
 	res.LLMCalls += chatCalls
@@ -407,7 +419,7 @@ func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string)
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
 	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
-	if calls := requiredCalls(view.Source); len(calls) > 0 {
+	if calls := requiredCalls(view.Source, "s.store."); len(calls) > 0 {
 		sb.WriteString("REQUIRED CALLS — every one must appear in the body, under the same condition the view shows: " +
 			strings.Join(calls, ", ") + "\n\n")
 	}
@@ -419,27 +431,31 @@ func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string)
 	return sb.String()
 }
 
-// storeCallRe extracts the store calls the rewritten view requires.
-var storeCallRe = regexp.MustCompile(`s\.store\.([A-Za-z0-9_]+)\(`)
+// storeCallRe extracts the store calls the rewritten view requires; the
+// receiver prefix is per-profile (P1: gonav's "s.store." is the reference).
+func storeCallRe(receiver string) *regexp.Regexp {
+	return regexp.MustCompile(regexp.QuoteMeta(receiver) + `([A-Za-z0-9_]+)\(`)
+}
 
-// requiredCalls lists the unique store method names in the view, in order.
-func requiredCalls(view string) []string {
+// requiredCalls lists the unique store method names in the view, in order,
+// prefixed with the profile's store receiver.
+func requiredCalls(view string, receiver string) []string {
 	var names []string
-	for _, m := range storeCallRe.FindAllStringSubmatch(view, -1) {
+	for _, m := range storeCallRe(receiver).FindAllStringSubmatch(view, -1) {
 		names = append(names, m[1])
 	}
 	var out []string
 	for _, n := range common.UniqueStable(names) {
-		out = append(out, "s.store."+n)
+		out = append(out, receiver+n)
 	}
 	return out
 }
 
 // requiredCallErrs is the orchestration-contract gate: a body that drops a
 // store call the view shows is rejected and the omission fed back.
-func requiredCallErrs(view, body string) []string {
+func requiredCallErrs(view, body string, receiver string) []string {
 	var errs []string
-	for _, call := range requiredCalls(view) {
+	for _, call := range requiredCalls(view, receiver) {
 		if !strings.Contains(body, call+"(") {
 			errs = append(errs, "orchestration contract: "+call+" appears in the branch view but is missing from the body — every REQUIRED CALL is mandatory under its view condition")
 		}

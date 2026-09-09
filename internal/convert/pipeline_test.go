@@ -36,7 +36,7 @@ func (c contractClient) Chat(ctx context.Context, req llm.ChatRequest) (llm.Resp
 		}
 	}
 	extra := ""
-	for _, call := range requiredCalls(prompt) {
+	for _, call := range requiredCalls(prompt, "s.store.") {
 		if !strings.Contains(resp.Content, call+"(") {
 			extra += "\n\tif _, cerr := " + call + "(c); cerr != nil {\n\t\treturn nil, cerr\n\t}"
 		}

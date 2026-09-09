@@ -91,9 +91,38 @@ func TestCommonIsLeaf(t *testing.T) {
 	}
 }
 
-// TestParseStackNeverLooksUp is forbidden arrow 5: cproc/* never imports
-// the pipeline packages (gen/convert/testgen/py*) — the parse stack never
-// looks up.
+// TestProfilesLiveAboveSharedCore is the kind-separation rule (A8.2): the
+// Go-service and Python-batch drivers never import each other's stacks —
+// profile drivers stay thin per kind over the shared core. A violation
+// means Go-shaped facts leaked into the batch stack (or reverse).
+func TestProfilesLiveAboveSharedCore(t *testing.T) {
+	d := loadDeps(t)
+	goOnly := map[string]bool{
+		"plan": true, "gen": true, "convert": true, "testgen": true, "testscan": true,
+	}
+	batchOnly := map[string]bool{
+		"batchflow": true, "pyplan": true, "pygen": true, "pychk": true,
+	}
+	for pkg, imps := range d {
+		rel, ok := strings.CutPrefix(pkg, mod+"/internal/")
+		if !ok {
+			continue
+		}
+		base := rel
+		if i := strings.Index(rel, "/"); i >= 0 {
+			base = rel[:i]
+		}
+		for _, imp := range imps {
+			impBase := internalPkg(imp)
+			if goOnly[base] && batchOnly[impBase] {
+				t.Errorf("%s imports %s — Go-kind and batch-kind drivers never mix", base, impBase)
+			}
+			if batchOnly[base] && goOnly[impBase] {
+				t.Errorf("%s imports %s — batch-kind and Go-kind drivers never mix", base, impBase)
+			}
+		}
+	}
+}
 func TestParseStackNeverLooksUp(t *testing.T) {
 	d := loadDeps(t)
 	forbidden := map[string]bool{
