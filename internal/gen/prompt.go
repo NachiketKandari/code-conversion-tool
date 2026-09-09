@@ -97,8 +97,18 @@ func (s *Service) ControllerPromptContext(endpoint string, p *plan.Plan, storeMe
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "func (s *%s) %s(c context.Context, request *models.%s) (data []*models.%s, err error)\n",
 		common.LowerFirst(s.Mapping.Service)+"Controller", endpoint, s.requestType(endpoint), s.responseType(endpoint))
+	// The request contract mirrors ModelFile's derivation (§4.8.3 —
+	// requestFields): branch FmlGet ops, unioned with the entry-preamble
+	// Fgets whose host vars the branch consumes (live-run fix).
+	var ep plan.Endpoint
+	for _, e := range s.Mapping.Endpoints {
+		if e.Name == endpoint {
+			ep = e
+			break
+		}
+	}
 	sb.WriteString("\ntype " + s.requestType(endpoint) + " struct {\n")
-	sb.WriteString(indentFields(contractFields(c.FmlOps, ir.FmlGet)))
+	sb.WriteString(indentFields(s.requestFields(ep, c)))
 	sb.WriteString("}\n")
 	sb.WriteString("\ntype " + s.responseType(endpoint) + " struct {\n")
 	sb.WriteString(indentFields(contractFields(c.FmlOps, ir.FmlAdd)))
@@ -110,7 +120,10 @@ func (s *Service) ControllerPromptContext(endpoint string, p *plan.Plan, storeMe
 			continue
 		}
 		q := s.Query(u.QueryIDs[0])
-		if q == nil || isCountQuery(q) {
+		if q == nil || q.Type.IsDML() || isCountQuery(q) {
+			// DML units (incl. MERGE) return no rows; COUNT singles return
+			// scalars — neither contributes a row struct to the contract
+			// (live-run fix: a MERGE endpoint previously hard-errored here).
 			continue
 		}
 		row := s.RowName(u.QueryIDs[0], u.Name)

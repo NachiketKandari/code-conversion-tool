@@ -257,7 +257,7 @@ func (s *Service) ModelFile(p *plan.Plan) (string, error) {
 		}
 		data.Structs = append(data.Structs, templates.StructSpec{
 			Name:   s.requestType(e.Name),
-			Fields: contractFields(c.FmlOps, ir.FmlGet),
+			Fields: s.requestFields(e, c),
 		})
 		data.Structs = append(data.Structs, templates.StructSpec{
 			Name:   s.responseType(e.Name),
@@ -296,6 +296,51 @@ func (s *Service) ModelFile(p *plan.Plan) (string, error) {
 		data.Structs = append(data.Structs, templates.StructSpec{Name: s.RowName(u.QueryIDs[0], u.Name), Fields: fields})
 	}
 	return render(templates.ModelFile, data)
+}
+
+// requestFields derives one endpoint's request struct fields (§4.8.3):
+// the branch's FmlGet ops, unioned with the entry-preamble Fgets whose
+// host vars the branch body actually consumes (live-run fix, 2026-09-10 —
+// the merge fixture reads FML_ACC_ID before the if/else; the
+// branch-scoped IR carried no get for it, the request struct rendered
+// empty, and the model had nothing to map). A preamble op whose target
+// host var appears in the branch's source lines joins the contract;
+// unused preamble reads (nav's FML_MODE_FLG against flag-dispatched
+// branches) stay out, so golden structs are unchanged.
+func (s *Service) requestFields(e plan.Endpoint, c *ir.Condition) []templates.FieldSpec {
+	fields := contractFields(c.FmlOps, ir.FmlGet)
+	have := map[string]bool{}
+	for _, f := range fields {
+		have[f.JSONTag] = true
+	}
+	branchSrc := ""
+	if s.source != "" && c.EndLine > c.StartLine {
+		lines := strings.Split(s.source, "\n")
+		from, to := c.StartLine, c.EndLine
+		if to > len(lines) {
+			to = len(lines)
+		}
+		if from >= 1 && from <= to {
+			branchSrc = strings.Join(lines[from-1:to], "\n")
+		}
+	}
+	if branchSrc == "" {
+		return fields
+	}
+	var preamble []ir.FmlOp
+	for _, op := range s.Main.FmlOps {
+		if op.Kind != ir.FmlGet || op.Dropped || have[op.Field] {
+			continue
+		}
+		if op.Target != "" && strings.Contains(branchSrc, op.Target) {
+			preamble = append(preamble, op)
+			have[op.Field] = true
+		}
+	}
+	if len(preamble) == 0 {
+		return fields
+	}
+	return append(fields, contractFields(preamble, ir.FmlGet)...)
 }
 
 func (s *Service) conditionOf(e plan.Endpoint) *ir.Condition {
