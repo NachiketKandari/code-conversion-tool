@@ -274,5 +274,3 @@ func mockRel(p *plan.Plan, folder, file string) string {
 	}
 	return folder + "/" + file
 }
-
-func serviceName(p *plan.Plan) string { return p.Service }

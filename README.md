@@ -89,7 +89,7 @@ Parses `.pc`/`.pcf` files into the conversion IR — 100% deterministic tool wor
 - **host vars** — typed from scanned declarations, header vars flagged
   `from_header`
 - **external fns** — called-but-undefined `fn_*`/`chk_*`; dir mode resolves
-  them corpus-wide (`fn_is_demo_active` → `fn_demo_lib.pc`) with QueryID cross-references; unresolved ones are flagged, never stubbed
+  them corpus-wide (`fn_is_demo_active` → `fn_demo_lib.pc`) with QueryID cross-references; unresolved ones are flagged in the IR — `convert` turns them into panicking stubs (see `plan` below)
 
 **Fragment mode:** a file holding a lone code block (typically one branch of an entry, in `.pc` or `.txt`) is detected automatically — no `SVC_*` entry and no function definitions — and converted under the same rubric: the fragment wraps as the pseudo-function `__fragment`, the top-level if-chain builds the condition inventory (a single-branch chain is enough; a block with no chain at all becomes one endpoint covering the whole fragment), and queries/FML ops extract identically. Use `-fragment` only to force the mode when detection is ambiguous. Helper files with `fn_*` definitions keep their full-file semantics.
 
@@ -141,7 +141,7 @@ go run ./cmd/tuxgo convert testdata/nav -mapping configs/nav.mapping.example.yam
 
 **No mapping? Draft, then stop.** With no `-mapping`, no `convert.mapping`, and no `mappings/` drafts, convert runs the endpoint-discovery scan (see the `discover` section below): editable mapping drafts land in `mappings/` — AI-named when the model is reachable, deterministic names otherwise — and the run exits **before generating anything**, so reviewing them and re-running the same command is free (no tree cleanup, no half-converted state). On the re-run the mapping resolves from the `mappings/` convention (a directory of per-service drafts, or a single-entry pick by `source:`/file-name match). Explicit `-mapping` still wins and stays strict.
 
-**Multi-service directories fan out one worker per service.** When the target directory holds several Tuxedo entry files (`SVC_*` functions), `convert` partitions it into services and converts each end-to-end on its own goroutine, bounded by `concurrency.workers`. Each service writes into its own output subtree (`baseRoot/<service>`) with its own ledger, so runs stay isolated and resumable; the staged-collision guard and Tier B scope per service. `-mapping` then points at a **mapping directory** — one yaml per service declaring `source: <entry .pc file>`; an entry without a mapping, or a mapping naming no entry, is a hard error (a mapping naming an entry excluded by `convert.fileFilter` is a deliberate skip — WARN, not an error). When `-mapping` is absent, the `mappings/` drafts are used — entries still missing a draft get one written and skip this run (draft, then re-run). `convert.fileFilter` scopes the run to your entries: `fileFilter: "mf_"` converts only `SVC_MF_*.pc` — with mappings present for the excluded services, they are skipped with a warning. Results print in extraction order after all workers land (first per-service error = exit error); workers=1 output is byte-identical to sequential single-service runs. Single-entry directories and single files keep the plain behavior above (`-mapping <file>`).
+**Multi-service directories fan out one worker per service.** When the target directory holds several Tuxedo entry files (`SVC_*` functions), `convert` partitions it into services and converts each end-to-end on its own goroutine, bounded by `concurrency.workers`. Each service writes into its own output subtree (`baseRoot/<service>`) with its own ledger, so runs stay isolated and resumable; the staged-collision guard and Tier B scope per service. `-mapping` then points at a **mapping directory** — one yaml per service declaring `source: <entry .pc file>`. The default `mappings/` convention is **lenient**: drafts for other targets (or old-format files with no `source:`) are skipped, and full validation is deferred to the draft that actually matches an entry — so a foreign or half-filled draft never poisons an unrelated run, while a matching-but-untagged draft surfaces as an error naming its file (fill its `name:`/`route:` fields, or delete it and re-run to regenerate). An explicit `-mapping <dir>` is strict: every yaml must load and orphan sources are errors; an entry without any mapping is always a hard error (endpoints are user data). When `-mapping` is absent, the `mappings/` drafts are used — entries still missing a draft get one written and the run drafts-and-stops. `convert.fileFilter` scopes the run to your entries: `fileFilter: "mf_"` converts only `SVC_MF_*.pc` — with mappings present for the excluded services, they are skipped with a warning. Results print in extraction order after all workers land (first per-service error = exit error); workers=1 output is byte-identical to sequential single-service runs. Single-entry directories and single files keep the plain behavior above (`-mapping <file>`).
 
 **Convert Python and Go in parallel** — two invocations, one per target, share nothing: `batchpy` writes Python modules under `-out` (default `python_out/`), `convert` writes Go under the target/staged tree, and each run gets its own log/audit IDs, so they compose trivially:
 
@@ -163,7 +163,7 @@ Repeat runs need no CLI arguments: set `convert.input` (the `.pc`/`.pcf` target)
 
 **SQL fidelity is checked, flag-only:** after generation, every db method's embedded SQL is compared against the source Tux SQL (`internal/sqlchk`) — same columns, tables, and conditions; alias renames and bind-style changes (`:1` ↔ `:sql_x`) pass, anything else flags as a typed deviation (`columns|tables|where|set|values|order|binds`). Deviations flip the unit's ledger status to `deviated` and the run summary reports `N sql deviations`; the run never fails, the reviewer decides. Controller bodies additionally pass a **required-call gate** — every store call the branch view shows must appear in the body (a dropped sub-flow is fed back through the bounded retries, never silently accepted) — and controller/handler artifacts are checked SQL-free (a SQL keyword leak in a string literal flags as `sql-leak`); a db method with no extractable SQL literal reports `unverifiable` — never a silent pass.
 
-**Staged trees are per-run:** a fresh run (empty ledger) over an existing staged/target tree hard-errors instead of silently mixing generations — controller/db files accumulate, so a leftover tree from a previous run must be cleared (or resumed via its ledger).
+**Staged trees are per-run:** a fresh run (empty ledger) over an existing staged/target tree hard-errors instead of silently mixing generations — controller/db files accumulate, so a leftover tree from a previous run must be cleared (or resumed via its ledger). `-base <dir>` overrides where output lands for one run (convert and gentest) — useful for throwaway verification runs that must not touch the staged tree or the real target.
 
 Where output lands depends on the two-laptop constraint:
 
@@ -173,6 +173,19 @@ Where output lands depends on the two-laptop constraint:
   `paths.staged` (`conversion_logs/_staged/`), Tier B is skipped with a recorded reason, and the run still succeeds — never an environment failure.
 
 Re-runs resume from the ledger: appended units are skipped (zero extra LLM calls); pending ones retry; `tuxgo plan` + `convert` over the same mapping regenerate the deterministic units byte-identically.
+
+**Reading a convert summary line** — `maintux: 12 files written under … — units: 17 appended, 0 failed, 0 blocked, 0 skipped, 0 placeholders, 1 stubbed fns, 0 sql deviations, 7 llm calls`:
+
+| Field | Meaning |
+|---|---|
+| `appended` | units generated and written (ledger status: appended/validated) |
+| `failed` | units whose gate retries were exhausted (names print below; resume retries them) |
+| `blocked` | always 0 today — kept for legacy ledgers |
+| `skipped` | deterministic-only mode: controller bodies left for an LLM-enabled resume |
+| `placeholders` | tpcall sites rendered as contract-stubs (`controller/tpcall_placeholders.go`) |
+| `stubbed fns` | unresolved external fns converted as panicking stubs, with the endpoints that call them |
+| `sql deviations` | db methods whose SQL drifted from the source (flag-only — the reviewer decides) |
+| `llm calls` | chat calls consumed this run (every one archived in the audit folder) |
 
 ## `batchpy` — Tux batch → Python
 
@@ -196,7 +209,7 @@ Directory mode converts every `.pc` file through the full per-file pipeline (sca
 
 Conventions live in the `batchpy:` config section (`wrapperModule`, `routerClass`, `readMode`/`writeMode`, `loggerPrefix`, `entrypoint`, `shape`, `dmlLoop`, `chunkSize`, `outDir`); CLI flags override. The input target is yaml-configurable too — `batchpy.input` (a `.pc`/`.pcf file or directory) is used when the CLI passes no positional, mirroring `convert.input` for the Go path; both commands' output dirs are yaml-driven as well (`batchpy.outDir` for Python, `paths.staged` / `paths.mainGo` for Go).
 
-## `gentest` — post-conversion Go test generation *(in development)*
+## `gentest` — post-conversion Go test generation
 
 The post-conversion pipeline (PRD 2026-09-09): point it at anything inside a converted service tree — a single `.go` file, a layer dir (`nav/handler`), a service dir (`nav` → db + controller + handler tests), or a services root (one worker per service) — and it scans which functions already have tests (by `Test<Fn>`/suite-method naming **or** any call-site invocation in existing test bodies), then generates the missing tests from the in-house shapes: db = testify suite + `go-sqlmock` table cases; controller = gomock store suite (`SetupTest`/`TearDownTest` mock lifecycle, guarded `gomock.Any()` EXPECTs, per-case request fields); handler = gomock controller + gin test context with Error/204/Success cases. Existing test funcs are never clobbered; mocks regenerate via the shared `mockgen` runner. Fixture values come from a `FixtureSource` seam — v0 synthesizes deterministic placeholders from struct tags; parsing real runtime logs is the last phase, on logs provided later.
 
@@ -251,6 +264,22 @@ go run ./cmd/tuxgo discover <dir>                          # one draft per entry
 go run ./cmd/tuxgo discover                                # uses convert.input from .tuxgo.yaml
 ```
 
+## Glossary
+
+The recurring vocabulary across commands, summaries, and logs:
+
+- **corpus** — the set of real `.pc` sources a run can see (e.g. `tuxExamples/`, `stuff-i-want-checked/`, `tux/`). "Resolved corpus-wide" = external fns are looked up across **every file in the target directory**, which is why a dir-mode convert resolves helpers a single-file run cannot. Corpus homes are gitignored, local-only.
+- **IR (intermediate representation)** — the deterministic, LLM-free parse of a `.pc` file: query units, conditions, FML ops, external fns. Everything downstream (plan/convert/batchpy) reads it; `tuxgo extract` writes it.
+- **golden** — a byte-pinned expected output guarded by a test (`testdata/batch/expected/`, `testdata/gentest/expected/`, the analyzer score pins). A refactor must reproduce goldens byte-for-byte or the test fails — the proof that consolidation changed nothing. Regenerate only with a deliberate rubric/template change.
+- **draft** — an editable mapping YAML written by convert's no-mapping fallback / `discover` (`mappings/<entry>.mapping.yaml`), with names/routes pre-filled (AI-suggested or deterministic). Review (or don't) and re-run — the tool proposes, your re-run decides.
+- **ledger** — the per-service unit-status database (`conversion_logs/ledger/`) that makes runs resumable: appended units skip on re-runs, pending ones retry.
+- **seam** — a single well-defined extension point shared by commands (`llm.RunSeam` owns every retry/budget/gate/audit skeleton; `profile` owns target-shape conventions).
+- **Tier A / Tier B** — Tier A (parse + gofmt) always runs where you are; Tier B (build/vet/test/smoke) runs only where the target service lives (`paths.mainGo` set). On a laptop without the target, Tier B is skipped with a recorded reason — compile-class residuals in LLM bodies surface there, by design.
+- **placeholder** — a tpcall contract-stub: the build works, the FML contract is in the comment, an outbound convention upgrades it later.
+- **stub** — a panicking package-level fn for an unresolved external fn (`controller/fnstubs.go`): the endpoint's logic generates against it and carries on; the `panic` makes every call loud until the fn is implemented.
+- **kitchen fixture** — `testdata/stripped/SVC_MIN_KITCHEN.pc`, the kitchen-sink regression target: one file with a bit of every construct (cursors, INSERTs, tpcall sites) so one run exercises every path.
+- **fn pool** — the full set of files ingested for a dir target; helper libs never need to match filters or mappings, they only feed fn resolution.
+
 ## Working-directory layout
 
 The agreed runtime layout (where the built binary lives):
@@ -288,7 +317,7 @@ The loader ships (Phase 1) — copy `configs/.tuxgo.example.yaml` to the working
 - `run` — profile selection, pinned temperature, token budgets (16k window,
   12k prompt / 4k output) and the `charsPerToken` estimator ratio (default 4, tunable per model without a code change); `run.llm: false` (or `-no-llm` on any command) is THE AI knob — deterministic-only everywhere: convert skips controller bodies (resumable later), batchpy/gentest degrade to placeholders/notes, discovery naming goes deterministic
 - `models[]` — OpenAI-compatible profiles on one client seam: `isec-vllm`
-  (production) + `local-dev-openrouter` (local dev); keys resolve via `apiKeyEnv` (env first) with a gitignored-file `apiKey` literal as the local-dev fallback — never commit a literal key (R6). `tuxgo` routes to the profile named by `run.profile` (or an explicit override) and logs the routing decision per run
+  (production, on-prem endpoint) + `local-dev-openrouter` (local dev, external API); keys resolve via `apiKeyEnv` (env first) with a gitignored-file `apiKey` literal as the local-dev fallback — never commit a literal key (R6). `tuxgo` routes to the profile named by `run.profile` (or an explicit override) and logs the routing decision per run. Egress note: live LLM calls send **derived** content only (query-replaced views, struct definitions — never raw SQL, never raw source files); for zero external egress of derived logic too, route `run.profile: isec-vllm` (on-prem) or run `-no-llm`
 - `retrieval` — disabled in MVP (V2 BM25 / V3 vector plug in behind the seam)
 - `elision`, `concurrency`, `validate` — safe-mode elision, opt-in worker
   count, bounded validation retries; `validate.compile` (`auto|always|never`) and `validate.run` gate the Tier-B compile/vet/test/smoke checks
@@ -309,6 +338,8 @@ go test ./...         # unit + golden-fixture tests
 go vet ./...          # vet
 gofmt -l .            # formatting check (fix with gofmt -w)
 ```
+
+`internal/archtest` additionally machine-checks the layering law (dependency direction cmd → orchestration → pipelines → parse stack → kernel; forbidden arrows fail the test run).
 
 Fixtures live in `testdata/nav/` (`SVC_DEMO_LIST.pc`, `fn_demo_lib.pc`) and `testdata/merge/` (`SVC_DEMO_MERGE.pc` — MERGE rubric + nesting math); the converted reference targets live in `examples/nav/`. Golden tests pin the fixture scores (nav 174 = 7 queries + 25 external + 142 branching factor; fn_demo_lib 2 = 1 query + 1 branch) and the merge fixture's 3 branch headers / factor 4 / score 5.
 
