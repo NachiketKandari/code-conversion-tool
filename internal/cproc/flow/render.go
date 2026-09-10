@@ -259,7 +259,7 @@ func (r *renderer) stmtLine(line string, n *Node) {
 			if strings.Contains(line, "TPSUCCESS") {
 				r.linef("return data, nil")
 			} else {
-				r.linef("return nil, err")
+				r.linef("return nil, err%s", r.codeComment(n))
 			}
 			return
 		case droppedCallees[name]:
@@ -269,7 +269,7 @@ func (r *renderer) stmtLine(line string, n *Node) {
 			r.todo(n.Line, "external fn call (plan resolves): "+firstLine(line))
 			return
 		case name == "Fadd32" || name == "Fget32":
-			r.todo(n.Line, "FML op → request/response mapping: "+firstLine(line))
+			r.todo(n.Line, "FML op → request/response mapping: "+firstLine(line)+r.codeComment(n))
 			return
 		}
 	}
@@ -290,6 +290,25 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// codeComment renders the legacy error codes the node's FML ops carry
+// (PRD-2026-09-10 defines pass, G-DEF6): the draft retains the codes the
+// legacy runtime maps to real messages. Empty when no op carries one.
+func (r *renderer) codeComment(n *Node) string {
+	var codes []string
+	seen := map[string]bool{}
+	for _, op := range n.FmlOps {
+		if op.Code == "" || seen[op.Code] {
+			continue
+		}
+		seen[op.Code] = true
+		codes = append(codes, op.Code)
+	}
+	if len(codes) == 0 {
+		return ""
+	}
+	return " // legacy error code(s): " + strings.Join(codes, ", ")
 }
 
 // goLitRHS cleans a C literal right-hand side for the draft: char literals
@@ -407,6 +426,11 @@ func exprGo(e *pred.Expr) string {
 		s := exprGo(e.Inner)
 		if s == "" {
 			return ""
+		}
+		if e.Inner != nil && e.Inner.Kind == "cmp" {
+			// `!` binds tighter than `<` — `!(c < d)` must keep its parens
+			// or the rendered Go flips the semantics.
+			return "!(" + s + ")"
 		}
 		return "!" + s
 	case "cmp":

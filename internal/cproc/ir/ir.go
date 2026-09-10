@@ -97,12 +97,18 @@ const (
 // ERR field or targets the input/send buffer — "fadd err = returning error".
 // Only flow-discovered candidate conditions set it (DIS-D1); inventory
 // conditions keep the flag unset so existing outputs never change.
+// Code is the legacy error-message code the op ships (PRD-2026-09-10
+// defines pass, G-DEF5): the literal the nearest preceding writer call
+// (errlog/strcpy/sprintf) stored into the add's message variable, or the
+// add's own literal value — the legacy runtime maps it to the real
+// message; empty means honestly unresolvable.
 type FmlOp struct {
 	Kind     FmlOpKind `json:"kind"`
 	Field    string    `json:"field"`
 	Target   string    `json:"target,omitempty"`
 	Buffer   string    `json:"buffer,omitempty"`
 	Line     int       `json:"line"`
+	Code     string    `json:"code,omitempty"`
 	Optional bool      `json:"optional,omitempty"`
 	Dropped  bool      `json:"dropped,omitempty"`
 	Error    bool      `json:"error,omitempty"`
@@ -251,7 +257,9 @@ type ExternalFn struct {
 // block converted under the standard rubric (PF-3): Entry is the synthesized
 // pseudo-function __fragment and every line number is the fragment file's
 // own. Buffers records the FML buffer-role facts (PF-4.1); TPCalls records
-// the correlated outbound-service call sites (PF-4.3). BranchCount counts
+// the correlated outbound-service call sites (PF-4.3); Defines records the
+// file's #define/#undef constants with their scope (PRD-2026-09-10 defines
+// pass). BranchCount counts
 // the file's if/else-if headers (else never contributes) and
 // BranchingFactor is the doubling-weighted total: each header contributes
 // +1 × 2^(number of enclosing if/else-if blocks); loops and else bodies do
@@ -261,6 +269,7 @@ type File struct {
 	Entry           string       `json:"entry,omitempty"`
 	Fragment        bool         `json:"fragment,omitempty"`
 	Functions       []string     `json:"functions"`
+	Defines         []Define     `json:"defines,omitempty"`
 	BranchCount     int          `json:"branch_count"`
 	BranchingFactor int          `json:"branching_factor"`
 	Conditions      []Condition  `json:"conditions,omitempty"`
@@ -282,6 +291,68 @@ type Unbalanced struct {
 	Kind string `json:"kind"` // block_comment | exec_sql | braces
 	Line int    `json:"line"`
 	Col  int    `json:"col"`
+}
+
+// Define is one preprocessor constant fact (PRD-2026-09-10 defines pass),
+// derived from the scanner's recorded #define/#undef directives — no
+// scanner change. Function attributes a define recorded inside a function
+// body extent ("" = file scope). Macro marks a function-like macro
+// (`#define M(x) …`): recorded for audit, never substituted. Undef marks
+// the `#undef` tombstone that clears the name from that point on (Value
+// empty).
+type Define struct {
+	Name     string `json:"name"`
+	Value    string `json:"value,omitempty"`
+	Line     int    `json:"line"`
+	Function string `json:"function,omitempty"`
+	Macro    bool   `json:"macro,omitempty"`
+	Undef    bool   `json:"undef,omitempty"`
+}
+
+// DefineAt resolves the constant `name` effective at 1-based `line` inside
+// function `fn` (G-DEF2) — the one scoped lookup for predicate substitution
+// and prompt rendering. File-scope defines are visible from their line
+// onward everywhere; function-scope defines are visible from their line
+// onward within their own function and shadow the file scope there (a
+// documented approximation of C's text-order preprocessor semantics —
+// leakage into later functions never happens). #undef is a tombstone:
+// the latest effective entry being an Undef means unresolvable.
+// Function-like macros are not constants — they never resolve here.
+func (f *File) DefineAt(fn string, line int, name string) (Define, bool) {
+	var bestFn, bestFile Define
+	hasFn, hasFile := false, false
+	for _, d := range f.Defines {
+		if d.Name != name || d.Line > line {
+			continue
+		}
+		if d.Macro {
+			continue
+		}
+		if d.Function != "" {
+			if d.Function != fn || (hasFn && bestFn.Line > d.Line) {
+				continue
+			}
+			bestFn, hasFn = d, true
+			continue
+		}
+		if hasFile && bestFile.Line > d.Line {
+			continue
+		}
+		bestFile, hasFile = d, true
+	}
+	switch {
+	case hasFn:
+		if bestFn.Undef {
+			return Define{}, false
+		}
+		return bestFn, true
+	case hasFile:
+		if bestFile.Undef {
+			return Define{}, false
+		}
+		return bestFile, true
+	}
+	return Define{}, false
 }
 
 // UniqueQueries returns the queries that survive duplicate collapsing

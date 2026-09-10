@@ -273,6 +273,7 @@ func build(facts *scanner.SourceFacts, opts Options) *File {
 
 	f.Queries = buildQueries(facts)
 	f.BranchCount, f.BranchingFactor = branchingOf(facts)
+	f.Defines = buildDefines(facts)
 
 	if entry != "" {
 		f.Conditions = buildConditions(facts, entry, f.Queries)
@@ -286,6 +287,73 @@ func build(facts *scanner.SourceFacts, opts Options) *File {
 
 	linkDuplicates(f.Queries)
 	return f
+}
+
+// buildDefines derives the file's define map from the recorded directives
+// (PRD-2026-09-10 defines pass, G-DEF1) — pure interpretation of facts the
+// scanner already captured. #define yields a constant entry (object-like)
+// or a Macro audit entry (function-like, `NAME(args)` with no space before
+// the paren); #undef yields a tombstone. Directives inside a function body
+// extent attribute to it; malformed args (no identifier) are skipped — the
+// raw Directive stays the audit trail, never a hard failure.
+func buildDefines(facts *scanner.SourceFacts) []Define {
+	ranges := fnRanges(facts)
+	out := make([]Define, 0, len(facts.Directives))
+	for _, d := range facts.Directives {
+		switch d.Kind {
+		case "define":
+			name, value, macro := parseDefineArg(d.Arg)
+			if name == "" {
+				continue
+			}
+			out = append(out, Define{Name: name, Value: value, Line: d.Line, Function: fnAtLine(ranges, d.Line), Macro: macro})
+		case "undef":
+			name, _, _ := parseDefineArg(d.Arg)
+			if name == "" {
+				continue
+			}
+			out = append(out, Define{Name: name, Line: d.Line, Function: fnAtLine(ranges, d.Line), Undef: true})
+		}
+	}
+	return out
+}
+
+// parseDefineArg splits a #define argument into name, value, and the
+// function-like marker: a `(` glued to the name (no space) makes it a
+// macro; whitespace before `(` leaves an object-like define whose value is
+// parenthesized text. Value keeps its raw text (compound expressions stay
+// unresolvable literals downstream, DEF-D2).
+func parseDefineArg(arg string) (name, value string, macro bool) {
+	arg = strings.TrimSpace(arg)
+	i := 0
+	for i < len(arg) && (arg[i] == '_' || (arg[i] >= 'a' && arg[i] <= 'z') || (arg[i] >= 'A' && arg[i] <= 'Z') || (arg[i] >= '0' && arg[i] <= '9')) {
+		i++
+	}
+	if i == 0 {
+		return "", "", false
+	}
+	name = arg[:i]
+	rest := arg[i:]
+	if strings.HasPrefix(rest, "(") {
+		return name, strings.TrimSpace(rest), true
+	}
+	return name, strings.TrimSpace(rest), false
+}
+
+// fnAtLine names the function whose body extent contains the line ("" at
+// file scope or outside any resolved extent).
+func fnAtLine(ranges map[string]fnRange, line int) string {
+	names := make([]string, 0, len(ranges))
+	for name := range ranges {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if r := ranges[name]; line >= r.start && line < r.end {
+			return name
+		}
+	}
+	return ""
 }
 
 // branchingOf totals the file's if/else-if header count (else never
@@ -971,8 +1039,67 @@ func fmlOpOf(call *scanner.FunctionCall, facts *scanner.SourceFacts) (FmlOp, boo
 	}
 	if kind == FmlGet {
 		op.Optional = fnotpresGuard(facts, call)
+	} else {
+		// Error-code retention (PRD-2026-09-10 defines pass, G-DEF5): the
+		// nearest preceding writer of the add's message variable, else the
+		// add's own literal value.
+		if code := errCodeOf(call, op.Target, facts); code != "" {
+			op.Code = code
+		} else if lit := stringLitArg(args, 2); lit != "" {
+			op.Code = lit
+		}
 	}
 	return op, true
+}
+
+// errCodeOf correlates an add's message variable with the nearest
+// preceding same-function writer call that fills it (DEF-D4 — the writer
+// set is the corpus convention): errlog (target = last arg, code = 2nd
+// arg), strcpy/sprintf (target = 1st arg, code = 2nd-arg literal). The
+// latest writer owns the variable: when its code is a define name or
+// computed text the result is "" — honest, never an older writer's stale
+// literal.
+func errCodeOf(call *scanner.FunctionCall, target string, facts *scanner.SourceFacts) string {
+	if target == "" {
+		return ""
+	}
+	best, bestLine := "", -1
+	for i := range facts.Calls {
+		w := &facts.Calls[i]
+		if w.Func != call.Func || w.Line > call.Line || w.Line <= bestLine {
+			continue
+		}
+		args := splitArgs(w.Args)
+		isWriter, code := false, ""
+		switch w.Name {
+		case "errlog":
+			if len(args) > 0 && normalizeTarget(args[len(args)-1]) == target {
+				isWriter, code = true, stringLitArg(args, 1)
+			}
+		case "strcpy", "sprintf":
+			if len(args) >= 2 && normalizeTarget(args[0]) == target {
+				isWriter, code = true, stringLitArg(args, 1)
+			}
+		}
+		if !isWriter {
+			continue
+		}
+		best, bestLine = code, w.Line
+	}
+	return best
+}
+
+// stringLitArg returns the unquoted content of args[idx] when it is a
+// plain string literal, "" otherwise.
+func stringLitArg(args []string, idx int) string {
+	if idx >= len(args) {
+		return ""
+	}
+	s := strings.TrimSpace(args[idx])
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return ""
 }
 
 // fnotpresGuard reports whether the ==-1 guard wrapping this Fget32 reads

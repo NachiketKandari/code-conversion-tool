@@ -369,19 +369,46 @@ func promptOf(t *testing.T, req map[string]any) string {
 // DB contract, and REQUIRED CALLS sections are unchanged either way.
 func TestBuildPromptFlowDraft(t *testing.T) {
 	view := budget.View{Source: "legacy C branch"}
-	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "", nil, nil)
+	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "", nil, nil, nil, nil)
 	if strings.Contains(prompt, "Deterministic flow draft") {
 		t.Error("empty draft must not add the flow section")
 	}
 	if !strings.Contains(prompt, "legacy C branch") {
 		t.Error("legacy view missing from the prompt")
 	}
-	withDraft := buildPrompt(view, "db contract", "struct contract", "NavHistory", "\trows, err := s.store.GetNavHistory(c)", nil, nil)
+	withDraft := buildPrompt(view, "db contract", "struct contract", "NavHistory", "\trows, err := s.store.GetNavHistory(c)", nil, nil, nil, nil)
 	if !strings.Contains(withDraft, "Deterministic flow draft") ||
 		!strings.Contains(withDraft, "s.store.GetNavHistory(c)") {
 		t.Errorf("draft section missing:\n%s", withDraft)
 	}
 	if !strings.Contains(withDraft, "keep the flow and every store call") {
 		t.Error("draft instruction line missing")
+	}
+}
+
+// TestBuildPromptLegacyFacts pins the defines-pass prompt sections
+// (PRD-2026-09-10 DEF-4): constants and error codes are deterministic
+// additive sections, absent when the span carries none.
+func TestBuildPromptLegacyFacts(t *testing.T) {
+	view := budget.View{Source: "legacy C branch"}
+	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "", nil, nil, nil, nil)
+	if strings.Contains(prompt, "Legacy constants") || strings.Contains(prompt, "Legacy error codes") {
+		t.Error("empty facts must not add the sections")
+	}
+	withFacts := buildPrompt(view, "db contract", "struct contract", "NavHistory", "", nil, nil,
+		[]string{"BUF_LEN = 6144", "DEMO_OUT_FML = 6"}, []string{"S31005", "S31010"})
+	if !strings.Contains(prompt, "legacy C branch") {
+		t.Error("baseline prompt broken")
+	}
+	for _, want := range []string{
+		"Legacy constants (preprocessor #defines visible in this branch",
+		"  - BUF_LEN = 6144",
+		"  - DEMO_OUT_FML = 6",
+		"Legacy error codes — retain them in the returned error text",
+		"S31005, S31010",
+	} {
+		if !strings.Contains(withFacts, want) {
+			t.Errorf("prompt missing %q:\n%s", want, withFacts)
+		}
 	}
 }

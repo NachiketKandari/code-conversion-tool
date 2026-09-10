@@ -232,6 +232,10 @@ func collectAnchors(facts *scanner.SourceFacts, fn string, irFile *ir.File) []an
 		n := &Node{Kind: KindBranch, Sub: string(b.Kind), Line: b.StartLine, EndLine: end, Cond: b.Cond}
 		if b.Kind != scanner.BranchElse {
 			e := pred.Parse(b.Cond)
+			if res := defineResolver(irFile, fn, b.StartLine); res != nil {
+				s := pred.Substitute(&e, res)
+				e = s
+			}
 			n.Predicate = &e
 		}
 		braced := b.BlockStart != 0 && b.BlockEnd != 0
@@ -251,6 +255,10 @@ func collectAnchors(facts *scanner.SourceFacts, fn string, irFile *ir.File) []an
 		n := &Node{Kind: KindLoop, Sub: string(l.Kind), Line: l.StartLine, EndLine: end, Cond: l.Cond}
 		if l.Cond != "" {
 			e := pred.Parse(l.Cond)
+			if res := defineResolver(irFile, fn, l.StartLine); res != nil {
+				s := pred.Substitute(&e, res)
+				e = s
+			}
 			n.Predicate = &e
 		}
 		braced := l.BlockStart != 0 && l.BlockEnd != 0
@@ -318,23 +326,40 @@ func nest(code []string, facts *scanner.SourceFacts, anchors []anchor, from, to,
 }
 
 // residualRun classifies the consecutive live-code lines [from, to] that no
-// anchor covers: control-flow-led or preprocessor-led runs are loud
-// unknown; an assignment/call run is a stmt; anything else is expr.
+// anchor covers: define/undef directive runs classify as elided
+// declarations (G-DEF4 — constants the IR already records); other
+// control-flow-led or preprocessor-led runs are loud unknown; an
+// assignment/call run is a stmt; anything else is expr.
 func residualRun(code []string, from, to, sig int, fn string, facts *scanner.SourceFacts, irFile *ir.File) *Node {
 	var text []string
+	var lines []int
 	for l := from; l <= to && l-1 < len(code); l++ {
 		if l == sig || !lineIsCode(code[l-1]) {
 			continue
 		}
 		text = append(text, strings.TrimSpace(code[l-1]))
+		lines = append(lines, l)
 	}
 	if len(text) == 0 {
 		return nil
 	}
 	joined := strings.Join(text, "\n")
-	// Control-flow keywords and preprocessor lines in a residual run mean
-	// the structural parse failed to anchor them — loud unknown, never a
-	// confidently-classified fake statement.
+	// Define/undef runs are the IR's own constants (G-DEF4): classified,
+	// never loud residue. Mixed runs (any other directive or statement)
+	// keep the loud-unknown rule — the fault-tolerance contract.
+	allDefine := true
+	for _, l := range lines {
+		if !isDefineLine(facts, l) {
+			allDefine = false
+			break
+		}
+	}
+	if allDefine {
+		return &Node{Kind: KindDecl, Sub: "define", Line: from, EndLine: to, Text: joined}
+	}
+	// Control-flow keywords and other preprocessor lines in a residual run
+	// mean the structural parse failed to anchor them — loud unknown, never
+	// a confidently-classified fake statement.
 	for _, l := range text {
 		if isControlResidue(l) {
 			return &Node{Kind: KindUnknown, Line: from, EndLine: to, Text: joined}
@@ -349,6 +374,53 @@ func residualRun(code []string, from, to, sig int, fn string, facts *scanner.Sou
 	run := &Node{Kind: KindStmt, Sub: sub, Line: from, EndLine: to, Text: joined}
 	annotate(run, facts, fn, irFile)
 	return run
+}
+
+// isDefineLine reports whether the line carries a recorded #define or
+// #undef directive — the only preprocessor lines the classify-as-decl rule
+// absorbs (G-DEF4).
+func isDefineLine(facts *scanner.SourceFacts, line int) bool {
+	for i := range facts.Directives {
+		d := &facts.Directives[i]
+		if d.Line == line {
+			return d.Kind == "define" || d.Kind == "undef"
+		}
+	}
+	return false
+}
+
+// defineResolver returns the ident→literal resolver for one function line
+// (G-DEF3): DefineAt lookups chained through bare-identifier values with a
+// cycle guard; only pure literals resolve (DEF-D2 — compound values keep
+// the ident in Go, the prompt's constants section carries them raw).
+// nil irFile → nil resolver (no substitution).
+func defineResolver(f *ir.File, fn string, line int) func(string) (string, bool) {
+	if f == nil {
+		return nil
+	}
+	return func(name string) (string, bool) {
+		seen := map[string]bool{}
+		cur := name
+		for {
+			if seen[cur] {
+				return "", false
+			}
+			seen[cur] = true
+			d, ok := f.DefineAt(fn, line, cur)
+			if !ok {
+				return "", false
+			}
+			v := strings.TrimSpace(d.Value)
+			switch {
+			case pred.IsLitText(v):
+				return v, true
+			case pred.IsBareIdent(v):
+				cur = v
+			default:
+				return "", false
+			}
+		}
+	}
 }
 
 // controlResidueWords are the keywords that, leading a residual line, mark

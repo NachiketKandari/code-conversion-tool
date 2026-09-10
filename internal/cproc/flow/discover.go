@@ -22,6 +22,7 @@ type Candidate struct {
 	Gets            []string `json:"gets,omitempty"`
 	Adds            []string `json:"adds,omitempty"`
 	ErrorAdds       []string `json:"error_adds,omitempty"`
+	Codes           []string `json:"codes,omitempty"`
 	QueryIDs        []string `json:"query_ids,omitempty"`
 	Redundant       bool     `json:"redundant,omitempty"`
 }
@@ -59,6 +60,7 @@ func Discover(tree *Tree, conditions []ir.Condition) []Candidate {
 				Gets:            census.gets,
 				Adds:            census.adds,
 				ErrorAdds:       census.errorAdds,
+				Codes:           fmlCodes(c),
 				QueryIDs:        c.QueryIDs,
 			}
 			if parentCand != nil {
@@ -89,6 +91,7 @@ func Discover(tree *Tree, conditions []ir.Condition) []Candidate {
 			Gets:            census.gets,
 			Adds:            census.adds,
 			ErrorAdds:       census.errorAdds,
+			Codes:           fmlCodes(root),
 			QueryIDs:        root.QueryIDs,
 		})
 		walkChildren(root, "c"+strconv.Itoa(idx), idx, root)
@@ -164,6 +167,22 @@ func fmlCensus(n *Node) struct {
 				out.adds = append(out.adds, op.Field)
 			}
 		}
+	}
+	return out
+}
+
+// fmlCodes lists the distinct legacy error codes the node's FML ops carry
+// (PRD-2026-09-10 defines pass, G-DEF6) — the draft's per-candidate
+// retention comment.
+func fmlCodes(n *Node) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, op := range n.FmlOps {
+		if op.Code == "" || seen[op.Code] {
+			continue
+		}
+		seen[op.Code] = true
+		out = append(out, op.Code)
 	}
 	return out
 }

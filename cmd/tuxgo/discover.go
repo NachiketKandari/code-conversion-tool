@@ -207,6 +207,9 @@ func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool, aiNames 
 			if len(c.QueryIDs) > 0 {
 				fmt.Fprintf(&sb, " | queries: %s", strings.Join(c.QueryIDs, ","))
 			}
+			if len(c.Codes) > 0 {
+				fmt.Fprintf(&sb, " | error codes: %s", strings.Join(c.Codes, ","))
+			}
 			if c.Redundant {
 				sb.WriteString(" | NOTE: subset of its parent — consider tagging the parent")
 			}
@@ -217,6 +220,9 @@ func renderDraft(f *ir.File, candidates []flow.Candidate, dirMode bool, aiNames 
 				fieldsOrDash(c.Gets), fieldsOrDash(c.Adds))
 			if len(c.QueryIDs) > 0 {
 				fmt.Fprintf(&sb, " | queries: %s", strings.Join(c.QueryIDs, ","))
+			}
+			if len(c.Codes) > 0 {
+				fmt.Fprintf(&sb, " | error codes: %s", strings.Join(c.Codes, ","))
 			}
 			sb.WriteString("\n")
 		}

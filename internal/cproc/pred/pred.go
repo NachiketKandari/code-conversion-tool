@@ -103,6 +103,77 @@ func Idents(e *Expr) []string {
 	return out
 }
 
+// Substitute returns a copy of the expression whose Ident leaves become
+// Lit nodes wherever resolve(name) yields a literal value (the define
+// substitution seam, PRD-2026-09-10 defines pass DEF-D2: literal-only —
+// the chain + cycle policy belongs to the resolver). Call nodes are
+// opaque: their raw argument text is never rewritten. Raw degrade nodes
+// stay untouched (untrusted text).
+func Substitute(e *Expr, resolve func(name string) (string, bool)) Expr {
+	if e == nil {
+		return Expr{}
+	}
+	out := *e
+	switch e.Kind {
+	case KindOr, KindAnd:
+		items := make([]Expr, len(e.Items))
+		for i := range e.Items {
+			items[i] = Substitute(&e.Items[i], resolve)
+		}
+		out.Items = items
+	case KindNot:
+		inner := Substitute(e.Inner, resolve)
+		out.Inner = &inner
+	case KindCmp:
+		l := Substitute(e.L, resolve)
+		r := Substitute(e.R, resolve)
+		out.L, out.R = &l, &r
+	case KindIdent:
+		if v, ok := resolve(e.Name); ok {
+			out.Kind = KindLit
+			out.Name = ""
+			out.Text = v
+		}
+	}
+	return out
+}
+
+// IsLitText reports whether text is a pure C literal — numeric, 'char', or
+// "string" — the only values a define may substitute as (DEF-D2). Negative
+// numbers stay unresolved (a `-` makes it an expression, not a literal).
+func IsLitText(text string) bool {
+	t := strings.TrimSpace(text)
+	if len(t) >= 2 && (t[0] == '\'' || t[0] == '"') && t[len(t)-1] == t[0] {
+		return true
+	}
+	if t == "" {
+		return false
+	}
+	for _, r := range t {
+		if (r < '0' || r > '9') && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// IsBareIdent reports whether text is exactly one identifier — the shape a
+// define chain step (`#define A B`) must have to continue resolution.
+func IsBareIdent(text string) bool {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		b := t[i]
+		if b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9' && i > 0) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // --- tokenizer + recursive-descent parser ---
 
 type tokenizer struct {

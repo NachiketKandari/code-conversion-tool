@@ -305,7 +305,8 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 	if opts.FlowDraft {
 		draft = flowDraft(opts, svc, c)
 	}
-	prompt = buildPrompt(view, dbContract, contract, u.Name, draft, opts.Plan.Stubs, legacyHelpers(opts.Plan, view.Source))
+	prompt = buildPrompt(view, dbContract, contract, u.Name, draft, opts.Plan.Stubs, legacyHelpers(opts.Plan, view.Source),
+		legacyConstants(opts.Main, c, opts.Main.Entry), legacyErrorCodes(c))
 	messages := func(notes []string) []llm.Message {
 		msgs := []llm.Message{
 			{Role: "system", Content: systemPrompt},
@@ -477,13 +478,24 @@ func legacyHelpers(p *plan.Plan, view string) []string {
 	return out
 }
 
-func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string, stubs []plan.Stub, helpers []string) string {
+func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string, stubs []plan.Stub, helpers, constants, errCodes []string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
 	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
 	if calls := requiredCalls(view.Source, "s.store."); len(calls) > 0 {
 		sb.WriteString("REQUIRED CALLS — every one must appear in the body, under the same condition the view shows: " +
 			strings.Join(calls, ", ") + "\n\n")
+	}
+	if len(constants) > 0 {
+		sb.WriteString("Legacy constants (preprocessor #defines visible in this branch — use their literal values directly):\n")
+		for _, k := range constants {
+			sb.WriteString("  - " + k + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	if len(errCodes) > 0 {
+		sb.WriteString("Legacy error codes — retain them in the returned error text; the legacy runtime maps each code to its real message: " +
+			strings.Join(errCodes, ", ") + "\n\n")
 	}
 	if len(helpers) > 0 {
 		sb.WriteString("Legacy helper calls in the view — each resolved fn has a Go equivalent; never substitute one fn's symbol for another:\n")
@@ -505,6 +517,55 @@ func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string,
 		sb.WriteString("\nDeterministic flow draft (parsed from the control flow — verify it, fix field mappings, keep the flow and every store call):\n" + draft + "\n")
 	}
 	return sb.String()
+}
+
+// legacyConstants renders the #define constants effective at the endpoint's
+// span end (PRD-2026-09-10 defines pass, G-DEF6): file-scope plus entry-
+// function defines, #undef tombstones honored, macros excluded. The
+// unresolvable-in-Go compound values ride here verbatim so the LLM inlines
+// them without guessing.
+func legacyConstants(f *ir.File, c *ir.Condition, entry string) []string {
+	if f == nil {
+		return nil
+	}
+	effective := map[string]string{}
+	for _, d := range f.Defines {
+		if d.Line > c.EndLine || (d.Function != "" && d.Function != entry) {
+			continue
+		}
+		if d.Undef {
+			delete(effective, d.Name)
+			continue
+		}
+		if d.Macro {
+			continue
+		}
+		effective[d.Name] = d.Value
+	}
+	if len(effective) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(effective))
+	for name, value := range effective {
+		out = append(out, name+" = "+value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// legacyErrorCodes lists the distinct legacy error-message codes the
+// endpoint's FML ops ship (G-DEF6) — the deterministic retention rule.
+func legacyErrorCodes(c *ir.Condition) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, op := range c.FmlOps {
+		if op.Code == "" || seen[op.Code] {
+			continue
+		}
+		seen[op.Code] = true
+		out = append(out, op.Code)
+	}
+	return out
 }
 
 // storeCallRe extracts the store calls the rewritten view requires; the
