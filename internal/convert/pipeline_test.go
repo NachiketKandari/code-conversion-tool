@@ -135,6 +135,7 @@ func TestConvertGateEndToEnd(t *testing.T) {
 		"pkg/services/nav/db/nav.go",
 		"pkg/services/nav/db/interface.go",
 		"pkg/services/nav/controller/interface.go",
+		"pkg/services/nav/controller/fnstubs.go",
 		"pkg/services/nav/controller/nav.go",
 		"pkg/services/nav/handler/interface.go",
 		"pkg/services/nav/handler/nav.go",
@@ -150,10 +151,10 @@ func TestConvertGateEndToEnd(t *testing.T) {
 		t.Errorf("db interface accumulated %d methods, want 7\n%s", got, iface)
 	}
 
-	// LLM: 3 controller bodies (NavList blocked by fn_long_to_int), and no
-	// raw SQL ever reached the prompts.
-	if fake.RequestCount() != 3 {
-		t.Errorf("llm calls = %d, want 3 (NavList blocked)", fake.RequestCount())
+	// LLM: all four controller bodies (fn_long_to_int rides the stub), and
+	// no raw SQL ever reached the prompts.
+	if fake.RequestCount() != 4 {
+		t.Errorf("llm calls = %d, want 4 (stub-and-carry-on)", fake.RequestCount())
 	}
 	for i, req := range fake.Requests {
 		prompt := promptOf(t, req)
@@ -181,30 +182,43 @@ func TestConvertGateEndToEnd(t *testing.T) {
 		}
 	}
 
-	// Ledger: everything appended except the blocked endpoint.
+	// Ledger: everything appended — no blocked units under the stub
+	// policy, the unresolved fn carries a panicking stub instead.
 	appended, failed, blocked, _, placeholders, deviated := opts.Ledger.Counts()
-	if appended < 10 || failed != 0 || blocked != 1 || placeholders != 0 || deviated != 0 {
+	if appended < 10 || failed != 0 || blocked != 0 || placeholders != 0 || deviated != 0 {
 		t.Errorf("ledger = appended %d, failed %d, blocked %d, placeholders %d, deviated %d", appended, failed, blocked, placeholders, deviated)
 	}
-	var blockedNames []string
-	for _, e := range opts.Ledger.Units {
-		if e.Status == ledger.StatusBlocked {
-			blockedNames = append(blockedNames, e.Name)
-		}
-	}
-	if len(blockedNames) != 1 || blockedNames[0] != "NavList" {
-		t.Errorf("blocked = %v, want [NavList]", blockedNames)
+	if len(res.Stubs) != 1 || !strings.HasPrefix(res.Stubs[0], "fn_long_to_int") || !strings.Contains(res.Stubs[0], "NavList") {
+		t.Errorf("stubs = %v, want fn_long_to_int → NavList", res.Stubs)
 	}
 
-	// The controller file holds the three converted methods.
+	// The controller file holds the four converted methods, and the stub
+	// file pins the panicking placeholder for the unresolved fn.
 	ctrl, _ := os.ReadFile(filepath.Join(base, "pkg/services/nav/controller/nav.go"))
-	for _, m := range []string{"NavHistory", "SipFreedem", "SipInsurance"} {
+	for _, m := range []string{"NavHistory", "SipFreedem", "SipInsurance", "NavList"} {
 		if !strings.Contains(string(ctrl), "func (s *navController) "+m+"(") {
 			t.Errorf("controller file missing method %s", m)
 		}
 	}
-	if strings.Contains(string(ctrl), "NavList(") {
-		t.Error("blocked endpoint must not generate")
+	stubSrc, _ := os.ReadFile(filepath.Join(base, "pkg/services/nav/controller/fnstubs.go"))
+	for _, want := range []string{"func fnLongToInt(args ...any) int", `panic("tuxgo: fn_long_to_int is undefined in the source corpus`} {
+		if !strings.Contains(string(stubSrc), want) {
+			t.Errorf("fnstubs.go missing %q\n---\n%s", want, stubSrc)
+		}
+	}
+	// The NavList prompt must tell the model about the stub it can call.
+	var navListPrompt string
+	for _, req := range fake.Requests {
+		if p := promptOf(t, req); strings.Contains(p, "Endpoint: NavList") {
+			navListPrompt = p
+			break
+		}
+	}
+	if navListPrompt == "" {
+		t.Fatal("no prompt requested the NavList body")
+	}
+	if !strings.Contains(navListPrompt, "Stubbed helpers") || !strings.Contains(navListPrompt, "fnLongToInt(args ...any) int") {
+		t.Errorf("NavList prompt missing the stubbed-helper contract\n---\n%s", navListPrompt)
 	}
 
 	// Resume: a second run converts nothing new — zero LLM calls.
@@ -234,8 +248,8 @@ func TestConvertRetryFeedsTrimmedErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fake.RequestCount() != 4 { // 3 endpoints, one needed a retry
-		t.Errorf("llm calls = %d, want 4 (3 + 1 retry)", fake.RequestCount())
+	if fake.RequestCount() != 5 { // 4 endpoints, one needed a retry
+		t.Errorf("llm calls = %d, want 5 (4 + 1 retry)", fake.RequestCount())
 	}
 	if len(res.Failed) != 0 {
 		t.Errorf("failed = %v, want none", res.Failed)
@@ -302,14 +316,14 @@ func TestConvertSkipLLM(t *testing.T) {
 			t.Errorf("missing artifact %s", rel)
 		}
 	}
-	if len(res.Skipped) != 3 {
-		t.Errorf("skipped = %v, want the 3 mapped endpoints", res.Skipped)
+	if len(res.Skipped) != 4 {
+		t.Errorf("skipped = %v, want the 4 mapped endpoints", res.Skipped)
 	}
 	if len(res.Failed) != 0 {
 		t.Errorf("failed = %v, want none in skip-llm mode", res.Failed)
 	}
 	appended, failed, _, skipped, _, _ := opts.Ledger.Counts()
-	if skipped != 3 || failed != 0 || appended < 10 {
+	if skipped != 4 || failed != 0 || appended < 10 {
 		t.Errorf("ledger = appended %d, failed %d, skipped %d", appended, failed, skipped)
 	}
 
@@ -322,8 +336,8 @@ func TestConvertSkipLLM(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res2.LLMCalls != 3 {
-		t.Errorf("resume made %d llm calls, want 3 (only the skipped units)", res2.LLMCalls)
+	if res2.LLMCalls != 4 {
+		t.Errorf("resume made %d llm calls, want 4 (only the skipped units)", res2.LLMCalls)
 	}
 	if len(res2.Skipped) != 0 || len(res2.Failed) != 0 {
 		t.Errorf("resume skipped %v, failed %v, want none", res2.Skipped, res2.Failed)
@@ -350,14 +364,14 @@ func promptOf(t *testing.T, req map[string]any) string {
 // DB contract, and REQUIRED CALLS sections are unchanged either way.
 func TestBuildPromptFlowDraft(t *testing.T) {
 	view := budget.View{Source: "legacy C branch"}
-	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "")
+	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "", nil)
 	if strings.Contains(prompt, "Deterministic flow draft") {
 		t.Error("empty draft must not add the flow section")
 	}
 	if !strings.Contains(prompt, "legacy C branch") {
 		t.Error("legacy view missing from the prompt")
 	}
-	withDraft := buildPrompt(view, "db contract", "struct contract", "NavHistory", "\trows, err := s.store.GetNavHistory(c)")
+	withDraft := buildPrompt(view, "db contract", "struct contract", "NavHistory", "\trows, err := s.store.GetNavHistory(c)", nil)
 	if !strings.Contains(withDraft, "Deterministic flow draft") ||
 		!strings.Contains(withDraft, "s.store.GetNavHistory(c)") {
 		t.Errorf("draft section missing:\n%s", withDraft)

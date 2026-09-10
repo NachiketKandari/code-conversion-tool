@@ -100,11 +100,11 @@ func runPlan(ctx context.Context, args []string) error {
 	archivePlan(ctx, p)
 
 	// Human summary.
-	fmt.Printf("%s: %d units (%d db, %d controllers, %d handlers), %d skipped, %d blockers\n",
+	fmt.Printf("%s: %d units (%d db, %d controllers, %d handlers), %d skipped, %d stubbed fns\n",
 		mapping.Service, len(p.Units), countKind(p, plan.KindDBMethod), countKind(p, plan.KindControllerMethod),
-		countKind(p, plan.KindHandlerMethod), len(p.Skipped), len(p.Blockers))
-	for _, b := range p.Blockers {
-		fmt.Printf("  blocked: %s — %s\n", b.Fn, strings.Join(b.Endpoints, ", "))
+		countKind(p, plan.KindHandlerMethod), len(p.Skipped), len(p.Stubs))
+	for _, b := range p.Stubs {
+		fmt.Printf("  stubbed fn (panics until implemented): %s — %s\n", b.Fn, strings.Join(b.Endpoints, ", "))
 	}
 	for _, d := range p.Dropped {
 		fmt.Printf("  dropped: %s\n", d)

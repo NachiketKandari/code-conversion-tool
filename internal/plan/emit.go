@@ -57,9 +57,9 @@ func WriteMD(w io.Writer, p *Plan) error {
 			fmt.Fprintf(&sb, "| `%s` | %s |\n", s.QueryID, s.Reason)
 		}
 	}
-	if len(p.Blockers) > 0 {
-		sb.WriteString("\n## Blockers — generation waits for the defining file (§4.2.9.4)\n\n")
-		for _, b := range p.Blockers {
+	if len(p.Stubs) > 0 {
+		sb.WriteString("\n## Stubs — unresolved external fns converted as panicking placeholders (stub and carry on, 2026-09-10)\n\n")
+		for _, b := range p.Stubs {
 			fmt.Fprintf(&sb, "- `%s`: %s (endpoints: %s)\n", b.Fn, b.Reason, strings.Join(b.Endpoints, ", "))
 		}
 	}

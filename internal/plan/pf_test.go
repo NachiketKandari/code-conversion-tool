@@ -166,8 +166,8 @@ func TestFragmentPlanGate(t *testing.T) {
 	if db != 1 || ctrl != 2 || handler != 2 {
 		t.Errorf("units = %d db/%d ctrl/%d handler, want 1/2/2", db, ctrl, handler)
 	}
-	if len(p.Blockers) != 0 || len(p.Skipped) != 0 || len(p.Orphans) != 0 {
-		t.Errorf("plan noise = blockers %v skipped %v orphans %v", p.Blockers, p.Skipped, p.Orphans)
+	if len(p.Stubs) != 0 || len(p.Skipped) != 0 || len(p.Orphans) != 0 {
+		t.Errorf("plan noise = stubs %v skipped %v orphans %v", p.Stubs, p.Skipped, p.Orphans)
 	}
 	// The db unit slices the fragment file's own lines.
 	var dbUnit *Unit

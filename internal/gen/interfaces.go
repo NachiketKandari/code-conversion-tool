@@ -196,6 +196,21 @@ func (s *Service) ControllerInterface(p *plan.Plan) (string, error) {
 	return render(templates.ControllerInterfaceFile, data)
 }
 
+// FnStubFile renders controller/fnstubs.go — the panicking package-level
+// stubs for unresolved external fns (stub-and-carry-on, 2026-09-10). The
+// controller bodies call these symbols; variadic any keeps the signature
+// honest (nothing is invented about the fn's real parameters).
+func (s *Service) FnStubFile(p *plan.Plan) (string, error) {
+	data := templates.FnStubFileData{Package: "controller"}
+	for _, st := range p.Stubs {
+		data.Stubs = append(data.Stubs, templates.FnStub{
+			Name:     common.CamelLowerGo(st.Fn),
+			Original: st.Fn,
+		})
+	}
+	return render(templates.FnStubFile, data)
+}
+
 // HandlerInterface renders handler/interface.go: handler struct + interface
 // + constructor + the wiring function building the store from the existing
 // repo (OQ11).

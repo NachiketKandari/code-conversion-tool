@@ -48,11 +48,16 @@ func runConvertFanout(ctx context.Context, w *convertWiring, target string, main
 		return fmt.Errorf("convert: %s holds %d service(s) (fileFilter may exclude entries) — pass a mapping directory (one yaml per service, each with source: <entry file>), not %q",
 			target, len(mains), mappingPath)
 	}
-	bySource, err := loadMappingDir(mappingPath)
+	// The default mappings/ convention accumulates drafts for other
+	// targets: matching is lenient (source-field only, no full validation
+	// of foreign drafts). An explicit -mapping directory is deliberate —
+	// every yaml must load and orphan sources stay errors.
+	lenient := filepath.Clean(mappingPath) == filepath.Clean(defaultMappingsDir)
+	bySource, err := loadMappingDir(mappingPath, lenient)
 	if err != nil {
 		return err
 	}
-	mappings, err := matchMappings(ctx, target, mains, bySource, excluded)
+	mappings, err := matchMappings(ctx, target, mains, bySource, excluded, lenient)
 	if err != nil {
 		return err
 	}
@@ -96,7 +101,9 @@ func runConvertFanout(ctx context.Context, w *convertWiring, target string, main
 }
 
 // mappingSource keys a mapping by the entry file it declares (lowercased
-// basename) alongside the yaml it came from, for deterministic errors.
+// basename) alongside the yaml it came from, for deterministic errors. In
+// lenient (convention-dir) mode the mapping is nil until a match wins —
+// matchMappings validates the winner only.
 type mappingSource struct {
 	file    string
 	mapping *plan.Mapping
@@ -105,7 +112,7 @@ type mappingSource struct {
 // loadMappingDir loads every mapping yaml in dir, keyed by the entry file
 // each declares via source:. os.ReadDir returns sorted names, so parse
 // errors report deterministically.
-func loadMappingDir(dir string) (map[string]mappingSource, error) {
+func loadMappingDir(dir string, lenient bool) (map[string]mappingSource, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("convert: read mapping dir %s: %w", dir, err)
@@ -126,6 +133,25 @@ func loadMappingDir(dir string) (map[string]mappingSource, error) {
 	bySource := make(map[string]mappingSource, len(names))
 	for _, name := range names {
 		path := filepath.Join(dir, name)
+		if lenient {
+			// The shared convention dir accumulates drafts for other
+			// targets (and older formats): only the source field is
+			// matched, files without one are skipped, and full validation
+			// is deferred to the matched winner in matchMappings.
+			src, err := plan.MappingSourceOf(path)
+			if err != nil {
+				return nil, err
+			}
+			if src == "" {
+				continue
+			}
+			key := strings.ToLower(filepath.Base(src))
+			if _, dup := bySource[key]; dup {
+				return nil, fmt.Errorf("convert: %s holds two mappings declaring source %s", dir, src)
+			}
+			bySource[key] = mappingSource{file: path}
+			continue
+		}
 		m, err := plan.LoadMapping(path)
 		if err != nil {
 			return nil, err
@@ -147,7 +173,7 @@ func loadMappingDir(dir string) (map[string]mappingSource, error) {
 // user-specified, never invented), and a mapping whose source matches no
 // entry is drift to surface, not skip — except sources excluded by
 // convert.fileFilter, which are deliberate skips (WARN).
-func matchMappings(ctx context.Context, target string, mains []*ir.File, bySource map[string]mappingSource, excluded []string) ([]*plan.Mapping, error) {
+func matchMappings(ctx context.Context, target string, mains []*ir.File, bySource map[string]mappingSource, excluded []string, lenient bool) ([]*plan.Mapping, error) {
 	log := telemetry.Log(ctx)
 	excludedSet := make(map[string]bool, len(excluded))
 	for _, e := range excluded {
@@ -163,6 +189,16 @@ func matchMappings(ctx context.Context, target string, mains []*ir.File, bySourc
 				filepath.Base(main.Path), target, filepath.Base(main.Path))
 		}
 		used[key] = true
+		if ms.mapping == nil {
+			// Lenient mode deferred validation to the winner: an untagged
+			// draft for this entry surfaces here, named.
+			m, err := plan.LoadMapping(ms.file)
+			if err != nil {
+				return nil, err
+			}
+			ms.mapping = m
+			bySource[key] = ms
+		}
 		matched = append(matched, ms.mapping)
 	}
 	var orphans []string
@@ -173,6 +209,11 @@ func matchMappings(ctx context.Context, target string, mains []*ir.File, bySourc
 		if excludedSet[key] {
 			log.Warn("mapping skipped — its source entry is excluded by convert.fileFilter",
 				"mapping", filepath.Base(ms.file), "source", key)
+			continue
+		}
+		if lenient {
+			// A convention-dir draft for another target (or a future run)
+			// is normal local state, not this run's drift.
 			continue
 		}
 		orphans = append(orphans, filepath.Base(ms.file))

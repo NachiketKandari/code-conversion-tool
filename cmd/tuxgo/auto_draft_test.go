@@ -113,8 +113,12 @@ func TestMappingForEntry(t *testing.T) {
 	if err != nil || filepath.Base(got) != "SVC_DEMO_TWO.mapping.yaml" {
 		t.Errorf("stem fallback = %s, %v; want the stem-named yaml", got, err)
 	}
-	if _, err := mappingForEntry(dir, "SVC_OTHER.pc"); err == nil || !strings.Contains(err.Error(), "no mapping in") {
-		t.Errorf("unmatched entry: err = %v, want directory guidance", err)
+	// Nothing matching the entry (including foreign drafts) → "" so the
+	// caller drafts-and-stops.
+	writeFile(t, filepath.Join(dir, "foreign.mapping.yaml"), "service: x\nendpoints:\n  - condition: 1\n    name: \"\"\n    route: \"\"\n")
+	got, err = mappingForEntry(dir, "SVC_OTHER.pc")
+	if err != nil || got != "" {
+		t.Errorf("unmatched entry among foreign drafts = %q, %v; want \"\", nil", got, err)
 	}
 }
 

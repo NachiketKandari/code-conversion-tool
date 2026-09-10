@@ -30,6 +30,7 @@ const (
 	ControllerInterfaceFile ID = "controller_interface_file"
 	ControllerMethod        ID = "controller_method"
 	ControllerMethodTx      ID = "controller_method_tx"
+	FnStubFile              ID = "fn_stub_file"
 	HandlerInterfaceFile    ID = "handler_interface_file"
 	HandlerMethod           ID = "handler_method"
 	RouterSnippet           ID = "router_snippet"
@@ -76,6 +77,7 @@ var AllIDs = []ID{
 	ControllerInterfaceFile,
 	ControllerMethod,
 	ControllerMethodTx,
+	FnStubFile,
 	HandlerInterfaceFile,
 	HandlerMethod,
 	RouterSnippet,

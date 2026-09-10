@@ -24,6 +24,10 @@ const (
 	KindHandlerInterface    Kind = "handler_interface"
 	KindRouter              Kind = "router"
 	KindMocks               Kind = "mocks"
+	// KindFnStub is the controller-package file carrying the panicking
+	// stubs for unresolved external fns (user directive 2026-09-10: stub
+	// and carry on — the calling endpoints generate against it).
+	KindFnStub Kind = "fn_stub"
 	// KindTPCall is one tpcall site of a mapped endpoint (PF-4.4): it
 	// renders as a compilable placeholder stub carrying the send/recv FML
 	// contract — never invented outbound scaffolding (R8).
@@ -56,10 +60,13 @@ type Skipped struct {
 	Reason  string `json:"reason"`
 }
 
-// Blocker is an unresolved external fn: generation of the endpoints that
-// call it blocks pending its defining file — visible in the plan, never a
-// silent stub (§4.2.9.4).
-type Blocker struct {
+// Stub is an unresolved external fn (user directive 2026-09-10: stub and
+// carry on): the generator emits a panicking package-level placeholder and
+// the calling endpoints generate against it — visible in the plan, the
+// ledger, and the run summary, never silent. Implementing the stub is the
+// operator's follow-up; the panicking body keeps guessed semantics out of
+// the generated tree.
+type Stub struct {
 	Fn        string   `json:"fn"`
 	Reason    string   `json:"reason"`
 	Endpoints []string `json:"endpoints"`
@@ -67,15 +74,15 @@ type Blocker struct {
 
 // Plan is the deterministic decomposition of one conversion run.
 type Plan struct {
-	Service  string    `json:"service"`
-	Module   string    `json:"module"`
-	Source   string    `json:"source"`
-	Mapping  *Mapping  `json:"mapping"`
-	Units    []Unit    `json:"units"`
-	Skipped  []Skipped `json:"skipped,omitempty"`
-	Blockers []Blocker `json:"blockers,omitempty"`
-	Dropped  []string  `json:"dropped,omitempty"`
-	Orphans  []string  `json:"orphans,omitempty"`
+	Service string    `json:"service"`
+	Module  string    `json:"module"`
+	Source  string    `json:"source"`
+	Mapping *Mapping  `json:"mapping"`
+	Units   []Unit    `json:"units"`
+	Skipped []Skipped `json:"skipped,omitempty"`
+	Stubs   []Stub    `json:"stubs,omitempty"`
+	Dropped []string  `json:"dropped,omitempty"`
+	Orphans []string  `json:"orphans,omitempty"`
 }
 
 // Options carries the plan inputs: the main file's IR and source text, the
@@ -215,13 +222,13 @@ func Build(opts Options) (*Plan, error) {
 		case fn.Resolved:
 			p.Dropped = append(p.Dropped, fn.Name+" (no SQL in its body — pure logic, inlined by the controller)")
 		default:
-			b := Blocker{Fn: fn.Name, Reason: "defining file not provided — generation of the calling endpoints is blocked (§4.2.9.4)"}
+			b := Stub{Fn: fn.Name, Reason: "defining file not provided — converted as a panicking stub; implement before relying on the calling endpoints"}
 			for _, e := range m.Endpoints {
 				if c, err := cond(e); err == nil && callsiteIn(fn.Callsites, c) {
 					b.Endpoints = append(b.Endpoints, e.Name)
 				}
 			}
-			p.Blockers = append(p.Blockers, b)
+			p.Stubs = append(p.Stubs, b)
 		}
 	}
 
@@ -297,6 +304,14 @@ func Build(opts Options) (*Plan, error) {
 		TemplateID: "controller_interface_file",
 		Deps:       ctrlIDs,
 	})
+	if len(p.Stubs) > 0 {
+		add(Unit{
+			ID: fmt.Sprintf("u%02d", len(p.Units)+1), Kind: KindFnStub, Name: "fnstubs.go",
+			TargetPath: m.ImportPath("controller") + "/fnstubs.go",
+			TemplateID: "fn_stub_file", LLM: false,
+			Deps: []string{},
+		})
+	}
 
 	// TPCall units — one per call site under the owning endpoint (PF-4.4).
 	// Sites outside every mapped condition are recorded skips (§4.2.8: only

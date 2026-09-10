@@ -38,6 +38,13 @@ type SeamInput struct {
 	MaxRetries  int     // additional attempts beyond the first
 	Temperature float64 // passed through verbatim (endpoint defaults are the client's wiring)
 
+	// MaxTokens overrides the endpoint's per-request output cap when > 0
+	// (0 = endpoint default). Thinking-mode models spend part of the cap on
+	// reasoning that never reaches content, so seams that need code room
+	// raise it; the Budget.CheckOutput ceiling on the extracted content is
+	// unaffected.
+	MaxTokens int
+
 	// Prompt builds this attempt's messages. notes carries the accumulated
 	// rejection notes from earlier attempts (empty on the first). The first
 	// return value is the prompt text archived in the audit trail.
@@ -103,6 +110,7 @@ func RunSeam(ctx context.Context, in SeamInput) (payload string, calls int, note
 			Model:       "", // endpoint default (resolved by the client's wiring)
 			Messages:    messages,
 			Temperature: in.Temperature,
+			MaxTokens:   in.MaxTokens,
 		})
 		calls++
 		if cerr != nil {

@@ -135,6 +135,20 @@ type ControllerInterfaceData struct {
 	Methods    []string
 }
 
+// FnStub is one panicking placeholder for an unresolved external fn
+// (stub-and-carry-on, 2026-09-10): variadic args, int return matching the
+// corpus's -1 error convention.
+type FnStub struct {
+	Name     string // Go name, e.g. fnLongToInt
+	Original string // corpus symbol, e.g. fn_long_to_int
+}
+
+// FnStubFileData renders controller/fnstubs.go.
+type FnStubFileData struct {
+	Package string // "controller"
+	Stubs   []FnStub
+}
+
 // ControllerMethodData renders one controller endpoint method (pure business
 // logic + store calls; the body slot is filled by the pipeline/LLM).
 type ControllerMethodData struct {

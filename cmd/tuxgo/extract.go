@@ -179,8 +179,11 @@ func hasMappingYamls(dir string) bool {
 
 // mappingForEntry picks one mapping yaml out of a directory for a
 // single-entry convert: a mapping whose source: names the entry file wins,
-// else the one whose stem matches the entry stem. Zero matches is an error
-// listing the directory; two stem matches are ambiguous and refuse to guess.
+// else the one whose stem matches the entry stem. Matching is lenient —
+// only the source field is read, so unrelated drafts in the shared
+// convention dir never poison the run — and only the winner is validated
+// (by the caller's LoadMapping). Zero matches returns "" so the caller
+// drafts-and-stops; two stem/source matches refuse to guess.
 func mappingForEntry(dir, entryBase string) (string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -197,11 +200,11 @@ func mappingForEntry(dir, entryBase string) (string, error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		m, err := plan.LoadMapping(path)
+		src, err := plan.MappingSourceOf(path)
 		if err != nil {
 			return "", err
 		}
-		if m.Source != "" && strings.EqualFold(filepath.Base(m.Source), entryBase) {
+		if src != "" && strings.EqualFold(filepath.Base(src), entryBase) {
 			bySource = append(bySource, path)
 		}
 		// Stem match tolerates the .mapping.yaml double extension the
@@ -222,7 +225,7 @@ func mappingForEntry(dir, entryBase string) (string, error) {
 	case len(byStem) > 1:
 		return "", fmt.Errorf("convert: %s holds several mappings for %s — pass -mapping <file> explicitly", dir, entryBase)
 	default:
-		return "", fmt.Errorf("convert: no mapping in %s matches entry %s (expected source: %s or file name %s.mapping.yaml)", dir, entryBase, entryBase, stemOf(entryBase))
+		return "", nil
 	}
 }
 

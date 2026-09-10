@@ -111,11 +111,13 @@ func Generate(ctx context.Context, opts Options) (Result, error) {
 		if !opts.NoLLM && opts.Client != nil {
 			filled, calls, notes, err := fillServiceBody(ctx, opts)
 			res.LLMCalls = calls
-			res.Notes = append(res.Notes, notes...)
 			if err == nil {
 				body = filled
 				res.LLMFilled = true
 			} else {
+				// Rejected-attempt notes are failure context, not findings —
+				// on success the audit trail already archives every attempt.
+				res.Notes = append(res.Notes, notes...)
 				res.Notes = append(res.Notes, "llm fill failed: "+err.Error()+" — placeholder body emitted")
 			}
 		} else if !opts.NoLLM {

@@ -134,7 +134,7 @@ func TestLoadMappingDir(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "alpha.yaml"), mappingYAML("SVC_DEMO_LIST.pc", "alpha"))
 	writeFile(t, filepath.Join(dir, "beta.yaml"), mappingYAML("SVC_DEMO_TWO.pc", "beta"))
 
-	bySource, err := loadMappingDir(dir)
+	bySource, err := loadMappingDir(dir, false)
 	if err != nil {
 		t.Fatalf("loadMappingDir: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestLoadMappingDir(t *testing.T) {
 	// Missing source field is an error in dir mode.
 	bad := t.TempDir()
 	writeFile(t, filepath.Join(bad, "nosource.yaml"), "service: x\nmodule: m/pkg/services/x\nendpoints:\n  - condition: 1\n    name: A\n    route: /a\n")
-	if _, err := loadMappingDir(bad); err == nil || !strings.Contains(err.Error(), "missing source") {
+	if _, err := loadMappingDir(bad, false); err == nil || !strings.Contains(err.Error(), "missing source") {
 		t.Errorf("missing source: err = %v, want 'missing source'", err)
 	}
 
@@ -156,13 +156,13 @@ func TestLoadMappingDir(t *testing.T) {
 	dup := t.TempDir()
 	writeFile(t, filepath.Join(dup, "one.yaml"), mappingYAML("SVC_DEMO_LIST.pc", "alpha"))
 	writeFile(t, filepath.Join(dup, "two.yaml"), mappingYAML("svc_demo_list.pc", "beta"))
-	if _, err := loadMappingDir(dup); err == nil || !strings.Contains(err.Error(), "both declare source") {
+	if _, err := loadMappingDir(dup, false); err == nil || !strings.Contains(err.Error(), "both declare source") {
 		t.Errorf("duplicate source: err = %v, want 'both declare source'", err)
 	}
 
 	// Empty mapping dir is an error.
 	empty := t.TempDir()
-	if _, err := loadMappingDir(empty); err == nil {
+	if _, err := loadMappingDir(empty, false); err == nil {
 		t.Error("expected empty mapping dir to error")
 	}
 }
@@ -171,7 +171,7 @@ func TestMatchMappingsStrict(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "alpha.yaml"), mappingYAML("SVC_DEMO_LIST.pc", "alpha"))
 	writeFile(t, filepath.Join(dir, "beta.yaml"), mappingYAML("SVC_DEMO_TWO.pc", "beta"))
-	bySource, err := loadMappingDir(dir)
+	bySource, err := loadMappingDir(dir, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestMatchMappingsStrict(t *testing.T) {
 		{Path: filepath.Join("corpus", "SVC_DEMO_TWO.pc"), Entry: "SVC_DEMO_TWO"},
 	}
 
-	matched, err := matchMappings(context.Background(), "corpus", mains, bySource, nil)
+	matched, err := matchMappings(context.Background(), "corpus", mains, bySource, nil, false)
 	if err != nil {
 		t.Fatalf("matchMappings: %v", err)
 	}
@@ -189,23 +189,66 @@ func TestMatchMappingsStrict(t *testing.T) {
 	}
 
 	// A mapping whose source names no entry is drift — surfaced, not skipped.
-	_, err = matchMappings(context.Background(), "corpus", mains[:1], bySource, nil)
+	_, err = matchMappings(context.Background(), "corpus", mains[:1], bySource, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "no entry file") {
 		t.Errorf("orphan mappings: err = %v, want 'no entry file'", err)
 	}
 
 	// ...unless the source was excluded by convert.fileFilter — a deliberate
 	// skip, never orphan drift.
-	_, err = matchMappings(context.Background(), "corpus", mains[:1], bySource, []string{"svc_demo_two.pc"})
+	_, err = matchMappings(context.Background(), "corpus", mains[:1], bySource, []string{"svc_demo_two.pc"}, false)
 	if err != nil {
 		t.Errorf("filter-excluded mapping: err = %v, want a skip", err)
 	}
 
 	// An entry without a mapping is a hard error (endpoints are user data).
 	delete(bySource, "svc_demo_two.pc")
-	_, err = matchMappings(context.Background(), "corpus", mains, bySource, nil)
+	_, err = matchMappings(context.Background(), "corpus", mains, bySource, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "no mapping for entry") {
 		t.Errorf("unmapped entry: err = %v, want 'no mapping for entry'", err)
+	}
+}
+
+// TestMappingDirLenient pins the convention-dir posture: foreign drafts
+// (no source, older formats) are skipped, unmatched sources are normal
+// local state, and validation of a matched winner is deferred to
+// matchMappings — an untagged draft surfaces there, named.
+func TestMappingDirLenient(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "foreign.mapping.yaml"),
+		"service: svc_demo_list\nendpoints:\n  - condition: 1\n    name: \"\"\n    route: \"\"\n") // stale unfilled draft, no source
+	writeFile(t, filepath.Join(dir, "alpha.yaml"), mappingYAML("SVC_DEMO_LIST.pc", "alpha"))
+
+	bySource, err := loadMappingDir(dir, true)
+	if err != nil {
+		t.Fatalf("loadMappingDir lenient: %v", err)
+	}
+	if len(bySource) != 1 || bySource["svc_demo_list.pc"].mapping != nil {
+		t.Fatalf("lenient load = %+v, want one deferred (unvalidated) source", bySource)
+	}
+
+	mains := []*ir.File{{Path: filepath.Join("corpus", "SVC_DEMO_LIST.pc"), Entry: "SVC_DEMO_LIST"}}
+	matched, err := matchMappings(context.Background(), "corpus", mains, bySource, nil, true)
+	if err != nil {
+		t.Fatalf("matchMappings lenient: %v", err)
+	}
+	if len(matched) != 1 || matched[0].Service != "alpha" {
+		t.Errorf("matched = %v, want alpha", matched)
+	}
+
+	// A matching but untagged draft surfaces at match time, named.
+	untagged := t.TempDir()
+	writeFile(t, filepath.Join(untagged, "SVC_DEMO_LIST.mapping.yaml"),
+		"source: SVC_DEMO_LIST.pc\nservice: svc_demo_list\nendpoints:\n  - condition: 1\n    name: \"\"\n    route: \"\"\n")
+	bad, err := loadMappingDir(untagged, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := bad["svc_demo_list.pc"]
+	ms.mapping = nil
+	bad["svc_demo_list.pc"] = ms
+	if _, err := matchMappings(context.Background(), "corpus", mains, bad, nil, true); err == nil || !strings.Contains(err.Error(), "SVC_DEMO_LIST.mapping.yaml") {
+		t.Errorf("untagged match: err = %v, want the draft file named", err)
 	}
 }
 

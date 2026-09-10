@@ -90,11 +90,16 @@ func runConvert(ctx context.Context, args []string) error {
 	}
 
 	// A directory mapping for a single-entry target: pick the yaml whose
-	// source:/stem matches the entry (the mappings/ convention).
+	// source:/stem matches the entry (the mappings/ convention). Nothing
+	// matches — including a convention dir holding only foreign drafts —
+	// and the run drafts-and-stops instead.
 	if fi, serr := os.Stat(mappingPath); serr == nil && fi.IsDir() {
 		mappingPath, err = mappingForEntry(mappingPath, filepath.Base(mains[0].Path))
 		if err != nil {
 			return err
+		}
+		if mappingPath == "" {
+			return draftAndStop(ctx, target, cfg, *noLLM)
 		}
 	}
 	mapping, err := plan.LoadMapping(mappingPath)
@@ -214,8 +219,8 @@ func convertOneService(ctx context.Context, w *convertWiring, main *ir.File, fil
 // single-service and fan-out mode.
 func printServiceSummary(service string, res *convert.Result, led *ledger.Ledger, base, degrade string) {
 	appended, failed, blocked, skipped, placeholders, deviated := led.Counts()
-	fmt.Printf("%s: %d files written under %s — units: %d appended, %d failed, %d blocked, %d skipped, %d placeholders, %d sql deviations, %d llm calls\n",
-		service, len(res.Files), base, appended, failed, blocked, skipped, placeholders, deviated, res.LLMCalls)
+	fmt.Printf("%s: %d files written under %s — units: %d appended, %d failed, %d blocked, %d skipped, %d placeholders, %d stubbed fns, %d sql deviations, %d llm calls\n",
+		service, len(res.Files), base, appended, failed, blocked, skipped, placeholders, len(res.Stubs), deviated, res.LLMCalls)
 	if degrade != "" {
 		fmt.Println("  note:", degrade)
 	}
@@ -233,8 +238,8 @@ func printServiceSummary(service string, res *convert.Result, led *ledger.Ledger
 	for _, d := range res.SQLDeviations {
 		fmt.Println("  sql deviation:", d)
 	}
-	for _, bl := range res.Blocked {
-		fmt.Println("  blocked:", bl)
+	for _, st := range res.Stubs {
+		fmt.Println("  stubbed fn (panics until implemented):", st)
 	}
 }
 

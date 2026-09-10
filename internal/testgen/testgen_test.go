@@ -651,6 +651,24 @@ func TestLLMGate(t *testing.T) {
 	if err := gateCtrlBlock(good, u); err != nil {
 		t.Errorf("valid block rejected: %v", err)
 	}
+	// The live model names the returned value freely and may write the
+	// want/actual pair in either order (attempt 3 of run 10092026_052001
+	// wrote `data` reversed) — testify is symmetric, so both pass.
+	reversed := strings.Replace(good,
+		"actualOutput, err := suite.navController.NavList(suite.ctx, request)",
+		"data, err := suite.navController.NavList(suite.ctx, request)", 1)
+	reversed = strings.Replace(reversed,
+		"assert.Equal(t, actualOutput, testCase.expectedOutput)",
+		"assert.Equal(t, testCase.expectedOutput, data)", 1)
+	if err := gateCtrlBlock(reversed, u); err != nil {
+		t.Errorf("reversed-order block rejected: %v", err)
+	}
+	nilEqual := strings.Replace(good,
+		"assert.Equal(t, actualOutput, testCase.expectedOutput)",
+		"assert.Equal(t, testCase.expectedOutput, nil)", 1)
+	if err := gateCtrlBlock(nilEqual, u); err == nil {
+		t.Error("assert.Equal against nil must be rejected")
+	}
 	valueReq := strings.Replace(good, `request := &models.NavRequest{CompCode: "x"}`, `requestValue := models.NavRequest{CompCode: "x"}`, 1)
 	valueReq = strings.Replace(valueReq, "suite.ctx, request)", "suite.ctx, requestValue)", 1)
 	if err := gateCtrlBlock(valueReq, u); err == nil {

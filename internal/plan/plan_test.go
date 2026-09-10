@@ -116,12 +116,24 @@ func TestPlanGateNavGolden(t *testing.T) {
 		t.Errorf("fn unit = %+v", fnUnit)
 	}
 
-	// chk_* dropped, unresolved fns are visible blockers, zero orphans.
+	// chk_* dropped, unresolved fns become panicking stubs, zero orphans.
 	if len(p.Dropped) != 1 || !strings.Contains(p.Dropped[0], "chk_session") {
 		t.Errorf("dropped = %v, want chk_session", p.Dropped)
 	}
-	if len(p.Blockers) != 1 || p.Blockers[0].Fn != "fn_long_to_int" || len(p.Blockers[0].Endpoints) == 0 {
-		t.Errorf("blockers = %+v, want fn_long_to_int with affected endpoints", p.Blockers)
+	if len(p.Stubs) != 1 || p.Stubs[0].Fn != "fn_long_to_int" || len(p.Stubs[0].Endpoints) == 0 {
+		t.Errorf("stubs = %+v, want fn_long_to_int with affected endpoints", p.Stubs)
+	}
+	var stubUnit *Unit
+	for i := range p.Units {
+		if p.Units[i].Kind == KindFnStub {
+			stubUnit = &p.Units[i]
+		}
+	}
+	if stubUnit == nil {
+		t.Fatal("fn_stub unit missing (stubs present but no fnstubs.go unit)")
+	}
+	if !strings.HasSuffix(stubUnit.TargetPath, "/controller/fnstubs.go") {
+		t.Errorf("fn_stub target = %q, want controller/fnstubs.go", stubUnit.TargetPath)
 	}
 	if len(p.Orphans) != 0 {
 		t.Errorf("orphans = %v, want none", p.Orphans)

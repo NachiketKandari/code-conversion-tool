@@ -120,7 +120,7 @@ dbMethods:                      # optional pins: reference-quality DB signatures
   fn_is_demo_active:q1: { name: IsDemoActive }   # external fn → its own DB method
 ```
 
-Unpinned names get deterministic fallbacks (cursor/table-derived). The plan collapses duplicate queries to one DB method, records `chk_*` as dropped constructs, and lists unresolved external fns as visible **blockers** (the endpoints that call them are not generated — never silent stubs). Every tpcall site inside a mapped endpoint becomes its own **`tpcall` plan unit** carrying the site's full send/recv FML contract; sites outside every mapped condition are recorded skips. A site whose buffers are identified but whose block carries **zero FML ops** is flagged `ambiguous` so the placeholder states the empty contract instead of understating the gap.
+Unpinned names get deterministic fallbacks (cursor/table-derived). The plan collapses duplicate queries to one DB method, records `chk_*` as dropped constructs, and converts unresolved external fns as visible **panicking stubs** (`controller/fnstubs.go` — the calling endpoints generate against the stub and carry on; the stub's doc comment and `panic` mark every call site until the fn is implemented, never silent). Every tpcall site inside a mapped endpoint becomes its own **`tpcall` plan unit** carrying the site's full send/recv FML contract; sites outside every mapped condition are recorded skips. A site whose buffers are identified but whose block carries **zero FML ops** is flagged `ambiguous` so the placeholder states the empty contract instead of understating the gap.
 
 ```sh
 go run ./cmd/tuxgo plan testdata/nav -mapping configs/nav.mapping.example.yaml

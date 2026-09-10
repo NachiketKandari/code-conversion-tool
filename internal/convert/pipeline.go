@@ -74,7 +74,7 @@ type Options struct {
 type Result struct {
 	Files        []string
 	LLMCalls     int
-	Blocked      []string
+	Stubs        []string
 	Failed       []string
 	Skipped      []string
 	Placeholders []string
@@ -83,6 +83,14 @@ type Result struct {
 	// generated SQL drifted from the source Tux SQL, and SQL-free artifacts
 	// that leaked SQL keywords. Flag-only — the run itself never fails.
 	SQLDeviations []string
+}
+
+// fileArtifact is one deterministic whole-file output: the plan unit it
+// satisfies, its display name, the base-relative target path, and how to
+// render it.
+type fileArtifact struct {
+	id, name, path string
+	render         func() (string, error)
 }
 
 // Run executes the plan. Deterministic units regenerate byte-identically on
@@ -112,12 +120,11 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		}
 	}
 
-	// Blocked endpoints (unresolved external fns) — visible, never silent.
-	blockedEndpoints := map[string]string{}
-	for _, b := range opts.Plan.Blockers {
-		for _, e := range b.Endpoints {
-			blockedEndpoints[e] = b.Fn
-		}
+	// Stubbed helpers (unresolved external fns, stub-and-carry-on
+	// 2026-09-10): the endpoints that call them generate against the
+	// panicking stub, visibly.
+	for _, st := range opts.Plan.Stubs {
+		res.Stubs = append(res.Stubs, st.Fn+" → "+strings.Join(st.Endpoints, ", "))
 	}
 
 	// 1. Models — deterministic.
@@ -177,23 +184,27 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 
 	// 3. Controller + handler interfaces, handler methods, router — deterministic.
 	handlerIfaceID := unitID(opts.Plan, plan.KindHandlerInterface)
-	artifacts := []struct {
-		id, name, path string
-		render         func() (string, error)
-	}{
+	artifacts := []fileArtifact{
 		{unitID(opts.Plan, plan.KindControllerInterface), "controller-interface.go",
 			svc.Mapping.ImportPath("controller") + "/interface.go",
 			func() (string, error) { return svc.ControllerInterface(opts.Plan) }},
-		{handlerIfaceID, "handler-interface.go",
+	}
+	if len(opts.Plan.Stubs) > 0 {
+		artifacts = append(artifacts, fileArtifact{unitID(opts.Plan, plan.KindFnStub), "fnstubs.go",
+			svc.Mapping.ImportPath("controller") + "/fnstubs.go",
+			func() (string, error) { return svc.FnStubFile(opts.Plan) }})
+	}
+	artifacts = append(artifacts,
+		fileArtifact{handlerIfaceID, "handler-interface.go",
 			svc.Mapping.ImportPath("handler") + "/interface.go",
 			func() (string, error) { return svc.HandlerInterface(opts.Plan) }},
-		{handlerIfaceID + "+methods", "handler-methods.go",
+		fileArtifact{handlerIfaceID + "+methods", "handler-methods.go",
 			svc.Mapping.ImportPath("handler") + "/" + svc.Mapping.Service + ".go",
 			func() (string, error) { return svc.HandlerMethodsFile() }},
-		{unitID(opts.Plan, plan.KindRouter), "router-snippet",
+		fileArtifact{unitID(opts.Plan, plan.KindRouter), "router-snippet",
 			svc.Mapping.ImportPath("handler") + "/router_snippet.txt",
 			func() (string, error) { return svc.Router() }},
-	}
+	)
 	for _, a := range artifacts {
 		path, err := opts.absPath(opts.BaseDir, a.path)
 		if err != nil {
@@ -213,11 +224,6 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	for _, u := range unitsOf(opts.Plan, plan.KindControllerMethod) {
 		opts.Ledger.Get(u.ID, string(u.Kind), u.Name) // register before any transition
-		if fn, blocked := blockedEndpoints[u.Name]; blocked {
-			opts.Ledger.Set(u.ID, ledger.StatusBlocked, "unresolved external fn "+fn)
-			res.Blocked = append(res.Blocked, u.Name)
-			continue
-		}
 		if opts.Ledger.Get(u.ID, string(u.Kind), u.Name).Status == ledger.StatusAppended {
 			continue // resume: already converted
 		}
@@ -299,7 +305,7 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 	if opts.FlowDraft {
 		draft = flowDraft(opts, svc, c)
 	}
-	prompt = buildPrompt(view, dbContract, contract, u.Name, draft)
+	prompt = buildPrompt(view, dbContract, contract, u.Name, draft, opts.Plan.Stubs)
 	messages := func(notes []string) []llm.Message {
 		msgs := []llm.Message{
 			{Role: "system", Content: systemPrompt},
@@ -344,6 +350,7 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 const systemPrompt = `You convert one legacy Pro*C/Tuxedo branch into the body of a Go controller method.
 Rules:
 - Emit ONLY the Go statements that go between the method's braces. No package, imports, or func declaration. No helper functions, types, or constants.
+- The legacy view may open with "else if (…) {" (a mid-chain branch): that header is the condition this method already represents — never emit it or any leading "}". The body starts at the first statement under the header.
 - The signature is fixed and provided verbatim: the context parameter is c, the request parameter is request, and the named returns are data and err. Never declare or use req, resp, or Response.
 - Read inputs only as request.<Field>, using the request struct's verbatim field names.
 - Call the database exclusively through the store signatures provided — exactly the parameters each signature shows, same count and order. Never write SQL anywhere (no raw strings, no string literals containing SQL).
@@ -413,15 +420,23 @@ func (r planResolver) RowType(qid string) (string, bool) {
 // buildPrompt assembles the deterministic context: rewritten branch view,
 // DB contract, the fixed signature + verbatim struct definitions, the
 // required-call contract (every store call the view shows is a must-call —
-// a dropped sub-flow is a gate rejection, never a silent gap), and — when
+// a dropped sub-flow is a gate rejection, never a silent gap), the
+// stubbed-helper section when the plan stubbed unresolved fns, and — when
 // rendered — the deterministic flow draft the LLM enhances.
-func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string) string {
+func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string, stubs []plan.Stub) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
 	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
 	if calls := requiredCalls(view.Source, "s.store."); len(calls) > 0 {
 		sb.WriteString("REQUIRED CALLS — every one must appear in the body, under the same condition the view shows: " +
 			strings.Join(calls, ", ") + "\n\n")
+	}
+	if len(stubs) > 0 {
+		sb.WriteString("Stubbed helpers — legacy fns with no source in the corpus. Each has a generated package-level stub (variadic args, int return, panics at runtime); call it positionally with the same expressions the legacy call site passes, translated to Go:\n")
+		for _, st := range stubs {
+			fmt.Fprintf(&sb, "  - %s(...) → %s(args ...any) int\n", st.Fn, common.CamelLowerGo(st.Fn))
+		}
+		sb.WriteString("\n")
 	}
 	sb.WriteString("Fixed method signature and verbatim struct definitions (parameter and field names must match exactly):\n" + contract + "\n\n")
 	sb.WriteString("Legacy branch, with every SQL block already replaced by its store call:\n\n" + view.Source + "\n")
@@ -483,6 +498,9 @@ func branchSource(src string, from, to int) string {
 // is auto-fixed downstream (appendControllerMethod re-formats the file), so
 // only parse errors reject an attempt.
 func validateBody(opts Options, body string) []string {
+	if t := strings.TrimSpace(body); strings.HasPrefix(t, "}") {
+		return []string{"the body must not start with a branch-chain continuation (`} else ...`) — the view's leading `else if (...) {` header is the condition this method already represents; emit only the statements under it"}
+	}
 	wrapped := "package controller\n\nimport (\n\t\"context\"\n\tmodels \"mutual-fund-be/pkg/services/nav/models\"\n)\n\ntype t struct{}\n\nfunc (t) Check(ctx context.Context) (err error) {\n" + body + "\n}\n"
 	if _, ferr := goast.Emit("convert: controller body", wrapped); ferr != nil {
 		return validate.TrimGoErrors(ferr.Error())

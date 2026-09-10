@@ -12,6 +12,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"regexp"
 	"strings"
 
 	"github.com/Public/convert-tux-to-go/internal/llm"
@@ -26,6 +27,12 @@ func fillCtrlMethod(ctx context.Context, u *unit, opts Options) (string, int, er
 		Unit: u.sc.name, Kind: "gentest", Name: u.fn.Name,
 		Audit: opts.Audit, Client: opts.Client, Budget: opts.Budget, MaxRetries: opts.MaxRetries,
 		AbortOnChatError: true,
+		// 2× the output ceiling: thinking-mode models spend part of the
+		// request cap on reasoning that never reaches content (live run
+		// 2026-09-10: two of four attempts burned the full cap in reasoning
+		// and returned empty content); the extracted block itself is well
+		// under the Budget.CheckOutput ceiling.
+		MaxTokens: 2 * opts.Budget.MaxOutputTokens,
 		Prompt: func(notes []string) (string, []llm.Message) {
 			prompt := ctrlUserPrompt(u, notes)
 			return prompt, []llm.Message{
@@ -35,6 +42,9 @@ func fillCtrlMethod(ctx context.Context, u *unit, opts Options) (string, int, er
 		},
 		Extract: func(content string) string { return llm.ExtractFenced(content, "go") },
 		Gate: func(block string) []string {
+			if strings.TrimSpace(block) == "" {
+				return []string{"model returned no Go code (empty response content — often reasoning-only output); emit ONLY one ```go fenced block containing the single suite method"}
+			}
 			if err := gateCtrlBlock(block, u); err != nil {
 				return []string{err.Error()}
 			}
@@ -56,7 +66,7 @@ Deliverable shape (violations are rejected by automated gates):
 - Mock ONLY with suite.` + storeVar + ` (a gomock mock): wrap every EXPECT in ` + "`" + `if testCase.mockInput != nil { ... }` + "`" + `, the ctx arg is gomock.Any(), and the remaining args are the concrete literals the function passes — never request references. Multi-call flows get one case field per call (mockInput, mockInput2, …), each guarded, EXPECTed in call order with matching Return payloads.
 - Build the request inside the subtest after the EXPECT block: request := &models.<RequestType>{<Field>: testCase.<Field>} and call suite.` + ctrlVar + `.` + u.fn.Name + `(suite.ctx, request).
 - Reproduce the function's field mapping EXACTLY: the Success expectedOutput must be what the function returns given the mocked rows — copy the mapping from the source, do not guess.
-- Validations: assert.ErrorContains(t, err, testCase.expectedError) on the error path; assert.NoError(t, err) and assert.Equal(t, actualOutput, testCase.expectedOutput) on success.
+- Validations: assert.ErrorContains(t, err, testCase.expectedError) on the error path; assert.NoError(t, err) and assert.Equal(t, <the value the controller call returned>, testCase.expectedOutput) on success. Call the package-level assert.* functions with t — never suite.Assert().
 - Use only the suite fields, models types, and imports listed in the prompt (errors, sql, time are available). Never reference packages outside them.
 - No commit/rollback, no t.Parallel, no time.Sleep.`
 }
@@ -97,7 +107,7 @@ func ctrlUserPrompt(u *unit, notes []string) string {
 		fmt.Fprintf(&sb, "  - %s: %q\n", fv[0], fv[1])
 	}
 	fmt.Fprintf(&sb, "Response type: %s — assumed Success expectedOutput value: %s\n", f.ResponseType, responseLiteral(sc, f.ResponseType))
-	sb.WriteString("\nRules: the error case must exercise the store error path; the Success case must assert the exact mapped output (assert.Equal(t, actualOutput, testCase.expectedOutput)); every EXPECT sits behind an `if testCase.<input> != nil` guard with gomock.Any() as the ctx matcher.")
+	sb.WriteString("\nRules: the error case must exercise the store error path; the Success case must assert the exact mapped output (assert.Equal(t, <the value the call returned>, testCase.expectedOutput)); every EXPECT sits behind an `if testCase.<input> != nil` guard with gomock.Any() as the ctx matcher.")
 	if len(notes) > 0 {
 		sb.WriteString("\n\nEarlier attempts failed these gate checks — fix every listed problem:\n")
 		for _, n := range notes {
@@ -122,8 +132,34 @@ func gateCtrlBlock(block string, u *unit) error {
 	if !strings.Contains(block, "if testCase.mockInput") || !strings.Contains(block, "!= nil") {
 		return fmt.Errorf("EXPECT is not guarded by an `if testCase.mockInput… != nil` check")
 	}
-	if !strings.Contains(block, "assert.ErrorContains") || !strings.Contains(block, "assert.Equal(t, actualOutput, testCase.expectedOutput)") {
-		return fmt.Errorf("validations must be assert.ErrorContains on error + assert.NoError/assert.Equal(t, actualOutput, testCase.expectedOutput) on success")
+	if !strings.Contains(block, "assert.ErrorContains") || !strings.Contains(block, "assert.NoError") {
+		return fmt.Errorf("validations must be assert.ErrorContains on error + assert.NoError/assert.Equal on success")
+	}
+	// Order-insensitive Equal check (live-run fix, 2026-09-10): testify
+	// treats the want/actual pair symmetrically, and the model names the
+	// returned value freely (the reference shape's `actualOutput` was one
+	// choice among many — live runs wrote `data`). The line must reference
+	// testCase.expectedOutput and one plain identifier for the actual
+	// value; nil or a literal means the mapped output was never asserted.
+	eqRe := regexp.MustCompile(`assert\.Equal\(t,\s*(?:testCase\.expectedOutput\s*,\s*([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*)\s*,\s*testCase\.expectedOutput)\s*\)`)
+	eqFound := false
+	for _, line := range strings.Split(block, "\n") {
+		m := eqRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		actual := m[1]
+		if actual == "" {
+			actual = m[2]
+		}
+		if actual == "nil" || actual == "true" || actual == "false" {
+			continue // the mapped output was never really asserted
+		}
+		eqFound = true
+		break
+	}
+	if !eqFound {
+		return fmt.Errorf("the success path must assert.Equal the returned value against testCase.expectedOutput (e.g. assert.Equal(t, data, testCase.expectedOutput))")
 	}
 	src := "package gentestgate\n\n" + block
 	fset := token.NewFileSet()

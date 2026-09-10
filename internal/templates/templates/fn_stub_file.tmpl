@@ -1,0 +1,11 @@
+package {{.Package}}
+
+{{range .Stubs}}
+// {{.Name}} is a tuxgo-generated stub: {{.Original}} is undefined in the
+// source corpus, so conversion stubbed it and carried on. Implement it
+// before relying on any endpoint that calls it — every call panics until
+// then (args arrive positionally as the legacy call site passed them).
+func {{.Name}}(args ...any) int {
+	panic("tuxgo: {{.Original}} is undefined in the source corpus (stubbed by tuxgo convert)")
+}
+{{end}}
