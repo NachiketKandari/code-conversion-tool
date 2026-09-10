@@ -305,7 +305,7 @@ func controllerBody(ctx context.Context, opts Options, res *Result, svc *gen.Ser
 	if opts.FlowDraft {
 		draft = flowDraft(opts, svc, c)
 	}
-	prompt = buildPrompt(view, dbContract, contract, u.Name, draft, opts.Plan.Stubs)
+	prompt = buildPrompt(view, dbContract, contract, u.Name, draft, opts.Plan.Stubs, legacyHelpers(opts.Plan, view.Source))
 	messages := func(notes []string) []llm.Message {
 		msgs := []llm.Message{
 			{Role: "system", Content: systemPrompt},
@@ -353,6 +353,10 @@ Rules:
 - The legacy view may open with "else if (…) {" (a mid-chain branch): that header is the condition this method already represents — never emit it or any leading "}". The body starts at the first statement under the header.
 - The signature is fixed and provided verbatim: the context parameter is c, the request parameter is request, and the named returns are data and err. Never declare or use req, resp, or Response.
 - Read inputs only as request.<Field>, using the request struct's verbatim field names.
+- The named returns are data and err — never shadow them: assign "data = ..." / "err = ..." (or fresh local names); "data := ..." inside the body discards the method's output.
+- Every code path ends in an explicit return ("return data, err" on success, "return nil, err" on error) — a body that falls off the end returns zero values silently.
+- Every store call the view shows appears exactly once — never repeat a call, never bare-call one whose results the view uses: capture the returned values into locals.
+- Copy struct/row field names character-exact from the definitions provided — never fuse names (CToDateString is not CToDate + String) and never invent fields; a sql.NullString reads through its .String FIELD (no parentheses: row.X.String, never row.X.String()).
 - Call the database exclusively through the store signatures provided — exactly the parameters each signature shows, same count and order. Never write SQL anywhere (no raw strings, no string literals containing SQL).
 - Store methods return []*models.X or *models.X per their signatures; the row structs are provided verbatim — use their field names exactly, never invent fields.
 - String comparisons use double-quoted literals: flag == "Y", never 'Y'.
@@ -423,7 +427,57 @@ func (r planResolver) RowType(qid string) (string, bool) {
 // a dropped sub-flow is a gate rejection, never a silent gap), the
 // stubbed-helper section when the plan stubbed unresolved fns, and — when
 // rendered — the deterministic flow draft the LLM enhances.
-func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string, stubs []plan.Stub) string {
+// fnCallRe extracts the legacy fn_* calls a branch view shows (the
+// resolved-helper prompt mapping; case-insensitive, fn-name-shaped only).
+var fnCallRe = regexp.MustCompile(`(?i)\b(fn_[a-z0-9_]+)\s*\(`)
+
+// legacyHelpers maps the legacy fn_* calls a branch view shows to their Go
+// equivalents: SQL-bearing fns name the db method that owns their lookup
+// (from the plan's fn-namespaced units), pure-logic fns are named for
+// inlining. Unresolved fns ride the stubs section instead. One line per
+// fn, deterministic order.
+func legacyHelpers(p *plan.Plan, view string) []string {
+	fnMethod := map[string]string{}
+	for _, u := range p.Units {
+		if len(u.QueryIDs) == 0 || !strings.HasPrefix(u.QueryIDs[0], "fn_") {
+			continue
+		}
+		ns := u.QueryIDs[0]
+		fn := ns[:strings.LastIndex(ns, ":")]
+		fnMethod[fn] = u.Name
+	}
+	pureLogic := map[string]bool{}
+	for _, d := range p.Dropped {
+		if name, _, ok := strings.Cut(d, " "); ok && strings.HasPrefix(name, "fn_") {
+			pureLogic[name] = true
+		}
+	}
+	stubbed := map[string]bool{}
+	for _, st := range p.Stubs {
+		stubbed[st.Fn] = true
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range fnCallRe.FindAllStringSubmatch(view, -1) {
+		fn := strings.ToLower(m[1])
+		if seen[fn] || stubbed[fn] {
+			continue
+		}
+		seen[fn] = true
+		if method, ok := fnMethod[fn]; ok {
+			out = append(out, fmt.Sprintf("%s(...) → s.store.%s(...) — its SQL lookup is this store method (see the DB contract); translate the fn's remaining logic inline, declaring any locals you need", fn, method))
+			continue
+		}
+		if pureLogic[fn] {
+			out = append(out, fmt.Sprintf("%s(...) → pure logic resolved in the corpus — inline its behavior from the call-site usage", fn))
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s(...) → session/error plumbing, middleware-owned — drop the call", fn))
+	}
+	return out
+}
+
+func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string, stubs []plan.Stub, helpers []string) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Endpoint: %s\n\n", endpoint)
 	sb.WriteString("DB layer contract (call these; never write SQL):\n" + dbContract + "\n\n")
@@ -431,8 +485,15 @@ func buildPrompt(view budget.View, dbContract, contract, endpoint, draft string,
 		sb.WriteString("REQUIRED CALLS — every one must appear in the body, under the same condition the view shows: " +
 			strings.Join(calls, ", ") + "\n\n")
 	}
+	if len(helpers) > 0 {
+		sb.WriteString("Legacy helper calls in the view — each resolved fn has a Go equivalent; never substitute one fn's symbol for another:\n")
+		for _, h := range helpers {
+			sb.WriteString("  - " + h + "\n")
+		}
+		sb.WriteString("\n")
+	}
 	if len(stubs) > 0 {
-		sb.WriteString("Stubbed helpers — legacy fns with no source in the corpus. Each has a generated package-level stub (variadic args, int return, panics at runtime); call it positionally with the same expressions the legacy call site passes, translated to Go:\n")
+		sb.WriteString("Stubbed helpers — legacy fns with no source in the corpus. Each has a generated package-level stub (variadic args, int return, panics at runtime); call the RIGHT stub for each legacy fn and pass only identifiers your body declares (declare zero-value locals for C-only names like c_ServiceName or error buffers; out-pointers become &local):\n")
 		for _, st := range stubs {
 			fmt.Fprintf(&sb, "  - %s(...) → %s(args ...any) int\n", st.Fn, common.CamelLowerGo(st.Fn))
 		}

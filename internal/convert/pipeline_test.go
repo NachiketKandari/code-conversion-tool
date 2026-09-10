@@ -180,6 +180,11 @@ func TestConvertGateEndToEnd(t *testing.T) {
 		if !strings.Contains(prompt, "s.store.Get") {
 			t.Errorf("prompt %d missing the store contract", i)
 		}
+		// Resolved legacy fns in the view must be mapped to their store
+		// methods — the model never guesses a substitute symbol.
+		if strings.Contains(prompt, "fn_is_demo_active(") && !strings.Contains(prompt, "fn_is_demo_active(...) → s.store.IsDemoActive(") {
+			t.Errorf("prompt %d missing the legacy-helper mapping for fn_is_demo_active\n---\n%s", i, prompt)
+		}
 	}
 
 	// Ledger: everything appended — no blocked units under the stub
@@ -364,14 +369,14 @@ func promptOf(t *testing.T, req map[string]any) string {
 // DB contract, and REQUIRED CALLS sections are unchanged either way.
 func TestBuildPromptFlowDraft(t *testing.T) {
 	view := budget.View{Source: "legacy C branch"}
-	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "", nil)
+	prompt := buildPrompt(view, "db contract", "struct contract", "NavHistory", "", nil, nil)
 	if strings.Contains(prompt, "Deterministic flow draft") {
 		t.Error("empty draft must not add the flow section")
 	}
 	if !strings.Contains(prompt, "legacy C branch") {
 		t.Error("legacy view missing from the prompt")
 	}
-	withDraft := buildPrompt(view, "db contract", "struct contract", "NavHistory", "\trows, err := s.store.GetNavHistory(c)", nil)
+	withDraft := buildPrompt(view, "db contract", "struct contract", "NavHistory", "\trows, err := s.store.GetNavHistory(c)", nil, nil)
 	if !strings.Contains(withDraft, "Deterministic flow draft") ||
 		!strings.Contains(withDraft, "s.store.GetNavHistory(c)") {
 		t.Errorf("draft section missing:\n%s", withDraft)
