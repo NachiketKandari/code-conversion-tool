@@ -311,8 +311,9 @@ func runAnalyze(ctx context.Context, args []string) error {
 		opts = loaded
 		telemetry.Log(ctx).Info("loaded scoring overrides",
 			"path", *weightsPath,
-			"marks", fmt.Sprintf("query=%d simple=%d complex=%d tpcall=%d",
-				opts.Marks.Query, opts.Marks.Simple, opts.Marks.Complex, opts.Marks.TpCall),
+			"marks", fmt.Sprintf("query=%d simple=%d complex=%d tpcall=%d branch=%d tier_high=%d tier_medium=%d",
+				opts.Marks.Query, opts.Marks.Simple, opts.Marks.Complex, opts.Marks.TpCall,
+				opts.Marks.Branch, opts.Marks.TierHigh, opts.Marks.TierMedium),
 			"fn_overrides", len(opts.FnWeights))
 	}
 

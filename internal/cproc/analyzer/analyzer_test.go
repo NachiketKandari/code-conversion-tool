@@ -238,7 +238,7 @@ func TestAnalyzeDirAndCSV(t *testing.T) {
 	if err := WriteCSV(&buf, reports, DefaultMarks()); err != nil {
 		t.Fatalf("WriteCSV failed: %v", err)
 	}
-	if want := "# tuxgo marks: query=1 simple=5 complex=10 tpcall=20 branch=1"; !strings.Contains(buf.String(), want) {
+	if want := "# tuxgo marks: query=1 simple=5 complex=10 tpcall=20 branch=1 tier_high=30 tier_medium=10"; !strings.Contains(buf.String(), want) {
 		t.Errorf("CSV missing marks line %q:\n%s", want, buf.String())
 	}
 
@@ -282,10 +282,16 @@ func TestAnalyzeDirAndCSV(t *testing.T) {
 
 	// The marks cells row carries each scored column's mark over that
 	// column (spreadsheet row 2): query=1 under num_queries, branch=1
-	// under branching_factor, tpcall=20 under tpcall_count.
+	// under branching_factor, tpcall=20 under tpcall_count; the simple/
+	// complex tier marks sit over the external-fn columns they tier, and
+	// the tier thresholds over the complexity columns they gate — every
+	// weight-derived number in the shell is an editable marks cell.
 	marksRow := records[0]
 	if marksRow[2] != "1" || marksRow[3] != "1" || marksRow[6] != "20" {
 		t.Errorf("marks cells row misaligned (want num_queries=1, branching_factor=1, tpcall_count=20): %v", marksRow)
+	}
+	if marksRow[9] != "5" || marksRow[10] != "10" || marksRow[16] != "30" || marksRow[17] != "10" {
+		t.Errorf("marks cells row missing simple/complex/tier cells: %v", marksRow)
 	}
 
 	// The nav row (highest complexity, first) names every external call with
@@ -326,14 +332,14 @@ func TestAnalyzeDirAndCSV(t *testing.T) {
 	if navRow[16] != "=C$2*C4+D$2*D4+G$2*G4+K4" {
 		t.Errorf("unexpected score formula: %q", navRow[16])
 	}
-	if navRow[17] != `=IF(Q4>=30,"HIGH",IF(Q4>=10,"MEDIUM","LOW"))` {
+	if navRow[17] != `=IF(Q4>=Q$2,"HIGH",IF(Q4>=R$2,"MEDIUM","LOW"))` {
 		t.Errorf("unexpected tier formula: %q", navRow[17])
 	}
 	fnRow := records[3]
 	if fnRow[16] != "=C$2*C5+D$2*D5+G$2*G5+K5" {
 		t.Errorf("unexpected score formula on second data row: %q", fnRow[16])
 	}
-	if fnRow[17] != `=IF(Q5>=30,"HIGH",IF(Q5>=10,"MEDIUM","LOW"))` {
+	if fnRow[17] != `=IF(Q5>=Q$2,"HIGH",IF(Q5>=R$2,"MEDIUM","LOW"))` {
 		t.Errorf("unexpected tier formula on second data row: %q", fnRow[17])
 	}
 }
@@ -431,9 +437,12 @@ func TestLoadOptionsCSVAndRescore(t *testing.T) {
 	}
 
 	// 7. Cleared per-fn weight falls back to the tier mark: fn_long_to_int
-	// (simple) with simple=3 → +3; score = 7 + 10 + 10 + 142 + 3 = 172.
+	// (simple) with the simple mark cell edited to 3 → +3; score =
+	// 7 + 10 + 10 + 142 + 3 = 172. The simple mark now lives in the marks
+	// cells row (over external_fns) — the comment-line edit loses to it
+	// (cells win, step 6).
 	edited = strings.Replace(buf.String(), "fn_long_to_int:simple:5", "fn_long_to_int:simple:", 1)
-	edited = strings.Replace(edited, "simple=5", "simple=3", 1)
+	edited = editMarksCell(edited, 10, "3")
 	opts, err = LoadOptionsCSV(writeTemp(t, edited))
 	if err != nil {
 		t.Fatalf("LoadOptionsCSV(cleared weight) failed: %v", err)
@@ -444,6 +453,24 @@ func TestLoadOptionsCSVAndRescore(t *testing.T) {
 	}
 	if nav.ComplexityScore != 172 {
 		t.Errorf("expected re-scored complexity 172, got %d", nav.ComplexityScore)
+	}
+
+	// 7b. The tier thresholds are marks too: raise both (tier_high cell
+	// over complexity_score, 1-based col 17, 30 → 300; tier_medium over
+	// complexity, col 18, 10 → 200) and the 174-score nav file re-tiers
+	// MEDIUM → LOW — the tier formula's own thresholds are editable cells.
+	edited = editMarksCell(buf.String(), 17, "300")
+	edited = editMarksCell(edited, 18, "200")
+	opts, err = LoadOptionsCSV(writeTemp(t, edited))
+	if err != nil {
+		t.Fatalf("LoadOptionsCSV(tier cell edited) failed: %v", err)
+	}
+	nav = navReport(t, dirPath, opts)
+	if nav.ComplexityScore != 174 {
+		t.Errorf("tier edits must not change the score, got %d", nav.ComplexityScore)
+	}
+	if nav.Complexity != "LOW" {
+		t.Errorf("expected nav re-tiered LOW with tier_high=300/tier_medium=200, got %s", nav.Complexity)
 	}
 
 	// 8. A typo'd mark is an error, never a silent default.

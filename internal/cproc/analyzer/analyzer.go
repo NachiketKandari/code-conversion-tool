@@ -17,21 +17,25 @@ import (
 // Marks are the OQ18 scoring knobs. Defaults: +1 per query, +5 per simple
 // external fn, +10 per complex external fn, +20 per tpcall, +1 per unit of
 // branching factor (each if/else-if header contributes +1 × 2^(number of
-// enclosing if/else-if blocks); else headers never contribute). Every mark
-// is settable in the generated CSV's `# tuxgo marks:` line (and in the marks
-// cells row, which wins) and re-applied via -weights (LoadOptionsCSV) —
-// scoring never requires a code change.
+// enclosing if/else-if blocks); else headers never contribute), tier
+// thresholds LOW/<tier_medium/MEDIUM/<tier_high/HIGH. Every mark is settable
+// in the generated CSV's `# tuxgo marks:` line and in the marks cells row
+// (which wins) and re-applied via -weights (LoadOptionsCSV) — scoring never
+// requires a code change, and the CSV's tier formula references the
+// threshold cells so a spreadsheet re-tiers live.
 type Marks struct {
-	Query   int
-	Simple  int
-	Complex int
-	TpCall  int
-	Branch  int
+	Query      int
+	Simple     int
+	Complex    int
+	TpCall     int
+	Branch     int
+	TierHigh   int
+	TierMedium int
 }
 
 // DefaultMarks returns the OQ18 rubric defaults.
 func DefaultMarks() Marks {
-	return Marks{Query: 1, Simple: 5, Complex: 10, TpCall: 20, Branch: 1}
+	return Marks{Query: 1, Simple: 5, Complex: 10, TpCall: 20, Branch: 1, TierHigh: 30, TierMedium: 10}
 }
 
 // Options carries all analyzer tuning for one run: the rubric Marks plus
@@ -258,9 +262,9 @@ func analyzeFacts(facts *scanner.SourceFacts, c corpus, opts Options) *Report {
 	score := (numQueries * opts.Marks.Query) + extWeight + (facts.TpCallCount * opts.Marks.TpCall) + (branchFactor * opts.Marks.Branch)
 
 	tier := "LOW"
-	if score >= 30 {
+	if score >= opts.Marks.TierHigh {
 		tier = "HIGH"
-	} else if score >= 10 {
+	} else if score >= opts.Marks.TierMedium {
 		tier = "MEDIUM"
 	}
 
@@ -373,17 +377,21 @@ func AnalyzeDir(dir string, opts Options) ([]*Report, error) {
 // the triage report and the single tuning surface, in four layers:
 //
 //   - Row 1, the `# tuxgo marks:` comment: every rubric mark in one
-//     machine-readable line (edit `query=… tpcall=… branch=…` there).
+//     machine-readable line (edit `query=… tpcall=… branch=… tier_high=…
+//     tier_medium=…` there).
 //   - Row 2, the marks cells: the marks that score a column sit in cells
-//     aligned over that column (num_queries, branching_factor, tpcall_count),
-//     so the score formulas can reference them. These cells win over the
-//     comment line when a CSV is fed back via LoadOptionsCSV / --weights.
+//     aligned over that column (num_queries, branching_factor, tpcall_count;
+//     simple/complex over the external-fn columns they tier; tier_high/
+//     tier_medium over complexity_score/complexity), so the score and tier
+//     formulas can reference them. These cells win over the comment line
+//     when a CSV is fed back via LoadOptionsCSV / --weights.
 //   - Row 3, the header; data rows follow. The external_fns cell names every
 //     external call as name:class:weight (edit the weight, or clear it with
 //     `name:class:` to fall back to the tier mark).
 //   - complexity_score and complexity are spreadsheet formulas (e.g.
-//     =C$2*C4+D$2*D4+G$2*G4+K4 and =IF(Q4>=30,"HIGH",…)) so a spreadsheet
-//     recalculates when marks cells change. Programmatic consumers recompute
+//     =C$2*C4+D$2*D4+G$2*G4+K4 and =IF(Q4>=Q$2,"HIGH",IF(Q4>=R$2,"MEDIUM",
+//     "LOW"))) so a spreadsheet recalculates when any marks cell — weights
+//     or tier thresholds — changes. Programmatic consumers recompute
 //     the score from the row instead (the formula string is not a number).
 //
 // Data rows are self-contained — score = num_queries*query +
@@ -394,8 +402,8 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 	writer := csv.NewWriter(w)
 	defer writer.Flush()
 
-	marksLine := fmt.Sprintf("# tuxgo marks: query=%d simple=%d complex=%d tpcall=%d branch=%d",
-		marks.Query, marks.Simple, marks.Complex, marks.TpCall, marks.Branch)
+	marksLine := fmt.Sprintf("# tuxgo marks: query=%d simple=%d complex=%d tpcall=%d branch=%d tier_high=%d tier_medium=%d",
+		marks.Query, marks.Simple, marks.Complex, marks.TpCall, marks.Branch, marks.TierHigh, marks.TierMedium)
 	if err := writer.Write([]string{marksLine}); err != nil {
 		return err
 	}
@@ -424,8 +432,10 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 
 	// Marks cells row (spreadsheet row 2, above the header): the mark that
 	// scores each factor column sits over that column, giving the score
-	// formulas their absolute references. external_weight has no mark — the
-	// per-fn weights are already summed in the cell.
+	// formulas their absolute references. simple/complex tier the external
+	// fns (their fallback weight at re-score time); tier_high/tier_medium
+	// are the complexity thresholds the tier formula references — every
+	// weight-derived number in the shell is therefore a marks cell.
 	idx := make(map[string]int, len(header))
 	for i, name := range header {
 		idx[name] = i + 1
@@ -435,6 +445,10 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 		"num_queries":      marks.Query,
 		"branching_factor": marks.Branch,
 		"tpcall_count":     marks.TpCall,
+		"external_fns":     marks.Simple,
+		"external_weight":  marks.Complex,
+		"complexity_score": marks.TierHigh,
+		"complexity":       marks.TierMedium,
 	} {
 		marksRow[idx[name]-1] = strconv.Itoa(mark)
 	}
@@ -467,7 +481,8 @@ func WriteCSV(w io.Writer, reports []*Report, marks Marks) error {
 			bCol, bCol, rowNo,
 			tCol, tCol, rowNo,
 			wCol, rowNo)
-		tierFormula := fmt.Sprintf("=IF(%s%d>=30,\"HIGH\",IF(%s%d>=10,\"MEDIUM\",\"LOW\"))", sCol, rowNo, sCol, rowNo)
+		tierFormula := fmt.Sprintf("=IF(%s%d>=%s$2,\"HIGH\",IF(%s%d>=%s$2,\"MEDIUM\",\"LOW\"))",
+			sCol, rowNo, sCol, sCol, rowNo, colLetters(idx["complexity"]))
 		row := []string{
 			r.File,
 			strconv.Itoa(r.NumLines),
@@ -624,6 +639,14 @@ func applyMarksRow(row, header []string, m *Marks) error {
 			target = &m.Branch
 		case "tpcall_count":
 			target = &m.TpCall
+		case "external_fns":
+			target = &m.Simple
+		case "external_weight":
+			target = &m.Complex
+		case "complexity_score":
+			target = &m.TierHigh
+		case "complexity":
+			target = &m.TierMedium
 		default:
 			continue
 		}
@@ -669,6 +692,10 @@ func applyMarksLine(field string, m *Marks) error {
 			m.TpCall = n
 		case "branch":
 			m.Branch = n
+		case "tier_high":
+			m.TierHigh = n
+		case "tier_medium":
+			m.TierMedium = n
 		default:
 			return fmt.Errorf("unknown mark %q", key)
 		}

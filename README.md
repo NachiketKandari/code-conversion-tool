@@ -43,7 +43,7 @@ Flags may appear before or after the target path:
 Four layers — a marks comment line, a marks cells row, the header, then one row per file:
 
 ```text
-# tuxgo marks: query=1 simple=5 complex=10 tpcall=20 branch=1
+# tuxgo marks: query=1 simple=5 complex=10 tpcall=20 branch=1 tier_high=30 tier_medium=10
 ,,1,1,,,20,,,,,,,,,,,,            ← marks cells row: each scored column's mark sits over that column
 file, num_lines, num_queries, branching_factor, branch_count, has_tpcall,
 tpcall_count, fn_local_count, fn_external_count, external_fns,
@@ -68,7 +68,7 @@ sed -e 's/chk_session:complex:10/chk_session:complex:0/' report.csv > edited.csv
 go run ./cmd/tuxgo analyze path/to/pc-files -weights edited.csv
 ```
 
-Precedence when scoring an external fn: **per-fn weight > tier mark > conversion-name fallback**. Precedence for the rubric marks: **marks cells row > `# tuxgo marks:` comment** — the cells under `num_queries`, `branching_factor`, and `tpcall_count` are the editing surface for those marks (`simple`/`complex` still live on the comment line, where they tier the external fns). Because a generated CSV pins an explicit weight for every fn it saw, editing `simple=`/`complex=` only affects fns whose weight you cleared (`fn_x:simple:` — falls back to the tier mark). Typos in either the comment line or a marks cell are errors, never silent defaults. Counts stay factual (`fn_external_count` still lists the call); only weights change. In the nav fixture, dropping the session check moves the score 174 → 164 (still HIGH).
+Precedence when scoring an external fn: **per-fn weight > tier mark > conversion-name fallback**. Precedence for the rubric marks: **marks cells row > `# tuxgo marks:` comment** — the cells under `num_queries`, `branching_factor`, and `tpcall_count` are the editing surface for those marks, `simple`/`complex` sit over the `external_fns`/`external_weight` columns they tier, and the **tier thresholds are marks too** (`tier_high`/`tier_medium` over the `complexity_score`/`complexity` columns): the `complexity` formula references those cells (`=IF(Q4>=Q$2,"HIGH",…)`), so editing a threshold cell re-tiers every row live in the spreadsheet, and a `-weights` re-run re-tiers in Go. Because a generated CSV pins an explicit weight for every fn it saw, editing `simple=`/`complex=` only affects fns whose weight you cleared (`fn_x:simple:` — falls back to the tier mark). Typos in either the comment line or a marks cell are errors, never silent defaults. Counts stay factual (`fn_external_count` still lists the call); only weights change. In the nav fixture, dropping the session check moves the score 174 → 164 (still HIGH).
 
 One mental model point: the score/tier cells are spreadsheet formulas over the editable inputs (marks cells row + per-fn weight cells) — edit an input in your spreadsheet and the row recalculates live; edit it in the file and re-run with `-weights` and the tool recomputes from the same inputs. The formulas exist for humans and spreadsheets; the tool is still the calculation engine of record and never parses them back. Why CSV and not xlsx: it stays diffable, tool-able with the stdlib, and dependency-free — an xlsx writer would add a third-party dependency for no scoring benefit (R4).
 
