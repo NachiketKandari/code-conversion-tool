@@ -100,6 +100,28 @@ func TestChatEndpointDefaultsFillGaps(t *testing.T) {
 	}
 }
 
+// TestChatHeadersMatchPrReview pins the isec vLLM access convention — the
+// exact header triple pr-review sends (llm/client.go:131-133 there):
+// Content-Type application/json, Authorization Bearer, api-key.
+func TestChatHeadersMatchPrReview(t *testing.T) {
+	srv := NewFakeServer(FakeResponse{Content: "ok"})
+	defer srv.Close()
+
+	if _, err := New(endpoint(srv.URL)).Chat(context.Background(), ChatRequest{Model: "test-model"}); err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+	h := srv.Headers[0]
+	if ct := h.Get("Content-Type"); ct != "application/json" {
+		t.Errorf("content-type = %q, want application/json", ct)
+	}
+	if auth := h.Get("Authorization"); auth != "Bearer test-key" {
+		t.Errorf("authorization = %q, want Bearer test-key", auth)
+	}
+	if key := h.Get("api-key"); key != "test-key" {
+		t.Errorf("api-key = %q, want test-key", key)
+	}
+}
+
 func TestChatKeylessOmitsAuthHeader(t *testing.T) {
 	srv := NewFakeServer()
 	defer srv.Close()
@@ -111,6 +133,9 @@ func TestChatKeylessOmitsAuthHeader(t *testing.T) {
 	}
 	if auth := srv.Headers[0].Get("Authorization"); auth != "" {
 		t.Errorf("keyless endpoint must not set Authorization, got %q", auth)
+	}
+	if key := srv.Headers[0].Get("api-key"); key != "" {
+		t.Errorf("keyless endpoint must not set api-key, got %q", key)
 	}
 }
 
