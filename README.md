@@ -18,10 +18,12 @@ go run ./cmd/tuxgo <command> [flags] <path>
 
 ## `analyze` — complexity triage
 
-Scans `.pc`/`.pcf` files and ranks them by conversion complexity. A single file prints one report; a directory walks recursively and produces one CSV row per file:
+Scans `.pc`/`.pcf` files and ranks them by conversion complexity. A single file prints one report; a directory walks recursively and produces one CSV row per file. A **file selector** pins one file inside a folder — `folder/file.pc` finds the file anywhere in the folder's subfolders, and the two-positional form `folder file.pc` is equivalent; the extension is optional and matching is case-insensitive (`analyze testdata svc_demo_list` finds `testdata/anything/svc_demo_list.pc`). Exactly one match analyzes; zero or several matches are loud errors naming the candidates:
 
 ```sh
 go run ./cmd/tuxgo analyze testdata/nav
+go run ./cmd/tuxgo analyze testdata/nav/SVC_DEMO_LIST.pc      # exact or searched within the folder tree
+go run ./cmd/tuxgo analyze testdata/nav SVC_DEMO_LIST         # folder + bare name, extension optional
 go run ./cmd/tuxgo analyze path/to/pc-files -csv report.csv
 ```
 

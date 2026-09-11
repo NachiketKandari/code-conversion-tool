@@ -170,6 +170,8 @@ Global Flags:
 
 Available Commands:
   analyze      Analyze Pro*C/Tuxedo complexity (+1/+5/+10/+20 rubric) and export CSV
+               (file selectors: analyze folder/file.pc or analyze folder file.pc —
+               the file may lie anywhere in the folder's subfolders)
   extract      Extract the deterministic IR (query units + QueryType marking, condition
                inventory, FML ops, external fns) as JSON
   plan         Generate the deterministic decomposition plan from the IR + the
@@ -292,6 +294,70 @@ func deriveValueFlags() map[string]bool {
 	return valueFlags
 }
 
+// resolveAnalyzeTarget resolves the analyze target from the positional
+// arguments (user directive, 2026-09-10): an existing path passes through
+// untouched; `analyze folder/file.pc` where the file lies deeper in the
+// folder's tree walks it for a case-insensitive basename match; `analyze
+// folder file.pc` (two positionals) is the explicit folder+name form. A
+// selector may omit the extension (`SVC_DEMO_LIST` matches SVC_DEMO_LIST.pc).
+// Exactly one match wins; zero or several matches are loud errors — never a
+// silent pick.
+func resolveAnalyzeTarget(positional []string) (string, error) {
+	if len(positional) == 1 {
+		p := positional[0]
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+		dir, name := filepath.Split(p)
+		dir = strings.TrimSuffix(dir, string(filepath.Separator))
+		if dir == "" {
+			return p, nil // no folder to search — os.Stat reports it
+		}
+		return findAnalysisFile(dir, name)
+	}
+	return findAnalysisFile(positional[0], positional[1])
+}
+
+// findAnalysisFile walks dir recursively for the one .pc/.pcf file whose
+// base name matches the selector (extension optional, case-insensitive).
+func findAnalysisFile(dir, name string) (string, error) {
+	if _, err := os.Stat(dir); err != nil {
+		return "", fmt.Errorf("cannot access folder %s: %w", dir, err)
+	}
+	want := strings.ToLower(strings.TrimSpace(name))
+	wantStem := strings.ToLower(strings.TrimSuffix(want, filepath.Ext(want)))
+	var matches []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext != ".pc" && ext != ".pcf" {
+			return nil
+		}
+		base := strings.ToLower(filepath.Base(path))
+		if base == want || strings.TrimSuffix(base, ext) == wantStem {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("searching %s: %w", dir, err)
+	}
+	switch len(matches) {
+	case 1:
+		return matches[0], nil
+	case 0:
+		return "", fmt.Errorf("no .pc/.pcf file matching %q under %s", name, dir)
+	default:
+		return "", fmt.Errorf("%q is ambiguous under %s — %d files match, name one exactly: %s",
+			name, dir, len(matches), strings.Join(matches, ", "))
+	}
+}
+
 func runAnalyze(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	csvPath := fs.String("csv", "", "Path to export CSV report (defaults to stdout)")
@@ -322,7 +388,10 @@ func runAnalyze(ctx context.Context, args []string) error {
 		return fmt.Errorf("must provide a file or directory to analyze")
 	}
 
-	targetPath := remaining[0]
+	targetPath, err := resolveAnalyzeTarget(remaining)
+	if err != nil {
+		return err
+	}
 	telemetry.Log(ctx).Info("analyze invoked", "target", targetPath, "csv", *csvPath)
 
 	fi, err := os.Stat(targetPath)

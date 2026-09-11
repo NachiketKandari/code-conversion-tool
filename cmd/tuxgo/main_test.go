@@ -182,3 +182,69 @@ func TestResolveBatchInput(t *testing.T) {
 		t.Errorf("no-target err = %v, want batchpy.input guidance", err)
 	}
 }
+
+// TestResolveAnalyzeTarget pins the analyze file-selector seam (user
+// directive, 2026-09-10): an existing path passes through;
+// `folder/file.pc` finds the file anywhere in the folder tree;
+// `folder file.pc` is the explicit two-positional form; the extension is
+// optional; zero/ambiguous matches are loud errors.
+func TestResolveAnalyzeTarget(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "svc", "nested")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(sub, "SVC_DEMO_LIST.pc")
+	if err := os.WriteFile(deep, []byte("void SVC_DEMO_LIST() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(root, "fn_lib.pcf")
+	if err := os.WriteFile(other, []byte("int fn_x() { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing path passes through untouched.
+	got, err := resolveAnalyzeTarget([]string{deep})
+	if err != nil || got != deep {
+		t.Errorf("existing path = %q, %v; want passthrough", got, err)
+	}
+
+	// folder/file.pc where the file lies in subfolders.
+	got, err = resolveAnalyzeTarget([]string{filepath.Join(root, "svc", "SVC_DEMO_LIST.pc")})
+	if err != nil || got != deep {
+		t.Errorf("folder/file selector = %q, %v; want %q", got, err, deep)
+	}
+
+	// Two positionals: folder + bare name, extension optional.
+	got, err = resolveAnalyzeTarget([]string{root, "SVC_DEMO_LIST.pc"})
+	if err != nil || got != deep {
+		t.Errorf("folder + name = %q, %v; want %q", got, err, deep)
+	}
+	got, err = resolveAnalyzeTarget([]string{root, "svc_demo_list"}) // case + extension optional
+	if err != nil || got != deep {
+		t.Errorf("stem selector = %q, %v; want %q", got, err, deep)
+	}
+
+	// Zero and multiple matches are loud errors.
+	if _, err := resolveAnalyzeTarget([]string{root, "NOPE"}); err == nil || !strings.Contains(err.Error(), "no .pc/.pcf") {
+		t.Errorf("zero-match err = %v, want guidance", err)
+	}
+	dup := filepath.Join(root, "dup.pc")
+	if err := os.WriteFile(dup, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dup2 := filepath.Join(sub, "dup.pcf")
+	if err := os.WriteFile(dup2, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveAnalyzeTarget([]string{root, "DUP"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("multi-match err = %v, want ambiguous listing", err)
+	}
+	// Missing folder, either form.
+	if _, err := resolveAnalyzeTarget([]string{filepath.Join(root, "gone", "x.pc")}); err == nil {
+		t.Error("missing folder must error")
+	}
+	if _, err := resolveAnalyzeTarget([]string{root, "gone"}); err == nil {
+		t.Error("zero-match selector must error")
+	}
+}
