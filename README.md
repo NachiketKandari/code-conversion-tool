@@ -24,6 +24,7 @@ Scans `.pc`/`.pcf` files and ranks them by conversion complexity. A single file 
 go run ./cmd/tuxgo analyze testdata/nav
 go run ./cmd/tuxgo analyze testdata/nav/SVC_DEMO_LIST.pc      # exact or searched within the folder tree
 go run ./cmd/tuxgo analyze testdata/nav SVC_DEMO_LIST         # folder + bare name, extension optional
+go run ./cmd/tuxgo analyze path/to/pc-files -pattern mf_      # one family inside a folder tree
 go run ./cmd/tuxgo analyze path/to/pc-files -csv report.csv
 ```
 
@@ -33,6 +34,7 @@ Flags may appear before or after the target path:
 |---|---|
 | `-csv <path>` | write the CSV to a file (default: stdout) |
 | `-weights <csv>` | re-score using per-fn weights edited into a previously generated CSV |
+| `-pattern <text>` | **directory targets only**: analyze just the files whose base name contains the substring (case-insensitive), e.g. `-pattern mf_`; zero matches is a loud error |
 | `-verbose` | debug-level console logging (the log file always captures debug) |
 | `-log-dir <dir>` | structured log directory (default `conversion_logs/logs`) |
 

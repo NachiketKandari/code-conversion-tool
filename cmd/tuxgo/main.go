@@ -245,7 +245,11 @@ func deriveValueFlags() map[string]bool {
 		})
 	}
 	registerFlags := map[string]func(*flag.FlagSet){
-		"analyze": func(fs *flag.FlagSet) { fs.String("csv", "", ""); fs.String("weights", "", "") },
+		"analyze": func(fs *flag.FlagSet) {
+			fs.String("csv", "", "")
+			fs.String("weights", "", "")
+			fs.String("pattern", "", "")
+		},
 		"extract": func(fs *flag.FlagSet) { fs.String("out", "", ""); fs.String("config", "", "") },
 		"plan": func(fs *flag.FlagSet) {
 			fs.String("mapping", "", "")
@@ -362,6 +366,7 @@ func runAnalyze(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	csvPath := fs.String("csv", "", "Path to export CSV report (defaults to stdout)")
 	weightsPath := fs.String("weights", "", "Path to a previously generated analysis CSV whose external_fns weights override the defaults (edit the CSV and re-run to re-score)")
+	pattern := fs.String("pattern", "", "Directory mode only: analyze only the .pc/.pcf files whose base name contains this substring (case-insensitive), e.g. -pattern mf_")
 
 	flagArgs, positional := reorderArgs(args)
 	if err := fs.Parse(flagArgs); err != nil {
@@ -405,8 +410,25 @@ func runAnalyze(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		if needle := strings.TrimSpace(*pattern); needle != "" {
+			kept := make([]*analyzer.Report, 0, len(reps))
+			for _, r := range reps {
+				if strings.Contains(strings.ToLower(filepath.Base(r.File)), strings.ToLower(needle)) {
+					kept = append(kept, r)
+				}
+			}
+			if len(kept) == 0 {
+				return fmt.Errorf("analyze: no .pc/.pcf file in %s matches -pattern %q", targetPath, needle)
+			}
+			telemetry.Log(ctx).Info("analyze pattern applied",
+				"pattern", needle, "matched", len(kept), "of", len(reps))
+			reps = kept
+		}
 		reports = reps
 	} else {
+		if strings.TrimSpace(*pattern) != "" {
+			return fmt.Errorf("analyze: -pattern applies to directory targets only (passed %q)", targetPath)
+		}
 		rep, err := analyzer.AnalyzeFile(targetPath, opts)
 		if err != nil {
 			return err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -246,5 +247,41 @@ func TestResolveAnalyzeTarget(t *testing.T) {
 	}
 	if _, err := resolveAnalyzeTarget([]string{root, "gone"}); err == nil {
 		t.Error("zero-match selector must error")
+	}
+}
+// TestAnalyzePatternPins the -pattern seam end-to-end (user directive,
+// 2026-09-10): directory mode keeps only the reports whose base name
+// carries the case-insensitive substring; zero matches error loudly; a
+// file target rejects the flag instead of silently ignoring it.
+func TestAnalyzePattern(t *testing.T) {
+	dirPath := filepath.Join("..", "..", "testdata", "nav")
+	if _, err := os.Stat(dirPath); err != nil {
+		t.Skip("testdata fixtures unavailable (fresh clone)")
+	}
+	csv := filepath.Join(t.TempDir(), "pattern.csv")
+	if err := runAnalyze(context.Background(), []string{"-csv", csv, "-pattern", "svc_demo", dirPath}); err != nil {
+		t.Fatalf("runAnalyze(pattern) failed: %v", err)
+	}
+	data, err := os.ReadFile(csv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+	if !strings.Contains(out, "SVC_DEMO_LIST.pc") {
+		t.Errorf("pattern run missing the matching file:\n%s", out)
+	}
+	if strings.Contains(out, "fn_demo_lib.pc") {
+		t.Errorf("non-matching file leaked through -pattern:\n%s", out)
+	}
+
+	// Zero matches are a loud error, never an empty report.
+	err = runAnalyze(context.Background(), []string{"-pattern", "zzz_nope", dirPath})
+	if err == nil || !strings.Contains(err.Error(), "matches -pattern") {
+		t.Errorf("zero-match err = %v, want pattern guidance", err)
+	}
+
+	// A file target rejects the flag loudly.
+	if err := runAnalyze(context.Background(), []string{"-pattern", "x", filepath.Join(dirPath, "SVC_DEMO_LIST.pc")}); err == nil || !strings.Contains(err.Error(), "directory targets only") {
+		t.Errorf("file-target pattern err = %v, want directory-targets-only", err)
 	}
 }
