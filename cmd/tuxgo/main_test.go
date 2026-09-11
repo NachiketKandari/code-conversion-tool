@@ -249,6 +249,7 @@ func TestResolveAnalyzeTarget(t *testing.T) {
 		t.Error("zero-match selector must error")
 	}
 }
+
 // TestAnalyzePatternPins the -pattern seam end-to-end (user directive,
 // 2026-09-10): directory mode keeps only the reports whose base name
 // carries the case-insensitive substring; zero matches error loudly; a
