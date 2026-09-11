@@ -142,16 +142,22 @@ type BufferRole struct {
 // send buffer before the call, Fget32 ops from the receive buffer after —
 // and the site extent. Ambiguous marks a site whose send/recv buffer
 // variables could not be identified (contracts degrade to empty, visibly).
+// ServiceFile names the corpus file(s) the call targets (PRD-2026-09-10
+// tpcall-resolution pass): the .pc file(s) whose entry function or base
+// name matches the service name, comma-joined on multiple matches,
+// resolved dir-mode only (single-file extraction has no corpus — empty is
+// the honest fact).
 type TPCall struct {
-	Service    string  `json:"service"`
-	SendBuffer string  `json:"send_buffer,omitempty"`
-	RecvBuffer string  `json:"recv_buffer,omitempty"`
-	SendFML    []FmlOp `json:"send_fml,omitempty"`
-	RecvFML    []FmlOp `json:"recv_fml,omitempty"`
-	StartLine  int     `json:"start_line"`
-	EndLine    int     `json:"end_line"`
-	Function   string  `json:"function,omitempty"`
-	Ambiguous  bool    `json:"ambiguous,omitempty"`
+	Service     string  `json:"service"`
+	ServiceFile string  `json:"service_file,omitempty"`
+	SendBuffer  string  `json:"send_buffer,omitempty"`
+	RecvBuffer  string  `json:"recv_buffer,omitempty"`
+	SendFML     []FmlOp `json:"send_fml,omitempty"`
+	RecvFML     []FmlOp `json:"recv_fml,omitempty"`
+	StartLine   int     `json:"start_line"`
+	EndLine     int     `json:"end_line"`
+	Function    string  `json:"function,omitempty"`
+	Ambiguous   bool    `json:"ambiguous,omitempty"`
 }
 
 // HostVar is one host/bind variable referenced by queries or FML ops.

@@ -232,3 +232,72 @@ func ExtractTestFile(t *testing.T, name, src string) *File {
 	}
 	return f
 }
+
+// tpcallCallerSource / tpcallTargetSource are the DEF tpcall-resolution
+// corpus: the caller's tpcall("SVC_TARGET", …) must resolve to the corpus
+// file whose entry (or base name) carries that service.
+const tpcallCallerSource = `void SVC_CALLER(TPSVCINFO *rqst) {
+	char c_errmsg[64];
+	if (x == 1) {
+		tpcall("SVC_TARGET", sbuffer, 0, rbuffer, 0, 0) ;
+	}
+}
+`
+
+const tpcallTargetSource = `void SVC_TARGET(TPSVCINFO *rqst) {
+	char c_flag;
+	if (c_flag == 'N') {
+		work();
+	}
+}
+`
+
+func TestTPCallServiceFileResolution(t *testing.T) {
+	dir := t.TempDir()
+	caller := filepath.Join(dir, "SVC_CALLER.pc")
+	target := filepath.Join(dir, "SVC_TARGET.pc")
+	if err := os.WriteFile(caller, []byte(tpcallCallerSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(tpcallTargetSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := ExtractDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range files {
+		for _, tp := range f.TPCalls {
+			got = append(got, tp.Service+" → "+tp.ServiceFile)
+		}
+	}
+	if len(got) != 1 || got[0] != "SVC_TARGET → "+target {
+		t.Errorf("service resolution = %v, want [SVC_TARGET → %s]", got, target)
+	}
+
+	// Single-file extraction has no corpus — the fact stays empty.
+	single, err := ExtractFile(caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(single.TPCalls) != 1 || single.TPCalls[0].ServiceFile != "" {
+		t.Errorf("single-file service_file must stay empty, got %+v", single.TPCalls)
+	}
+}
+
+func TestTPCallServiceFileUnresolvable(t *testing.T) {
+	// A service outside the corpus keeps the field empty — visible, never a guess.
+	dir := t.TempDir()
+	caller := filepath.Join(dir, "SVC_CALLER.pc")
+	if err := os.WriteFile(caller, []byte(tpcallCallerSource), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files, err := ExtractDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files[0].TPCalls) != 1 || files[0].TPCalls[0].ServiceFile != "" {
+		t.Errorf("unresolvable service_file must stay empty, got %+v", files[0].TPCalls)
+	}
+}

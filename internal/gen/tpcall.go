@@ -80,6 +80,9 @@ func (s *Service) tpcallStub(u plan.Unit) string {
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "// tuxgo:TODO tp:%s — %s:%s\n", tp.Service, filepath.Base(u.SourceFile), u.SourceLines)
+	if tp.ServiceFile != "" {
+		fmt.Fprintf(&sb, "// target: %s (the corpus file(s) behind service %s)\n", tp.ServiceFile, tp.Service)
+	}
 	fmt.Fprintf(&sb, "// send: %s\n", strings.Join(send, ", "))
 	fmt.Fprintf(&sb, "// recv: %s\n", strings.Join(recv, ", "))
 	fmt.Fprintf(&sb, "// reason: %s\n", reason)
@@ -103,7 +106,11 @@ func (s *Service) PlaceholderSignatures(c *ir.Condition, p *plan.Plan) []string 
 			continue
 		}
 		if c.ContainsLine(u.TP.StartLine) {
-			out = append(out, u.Name+"(send map[string]string) (recv map[string]string, error)")
+			sig := u.Name + "(send map[string]string) (recv map[string]string, error)"
+			if u.TP.ServiceFile != "" {
+				sig += " — target corpus file: " + u.TP.ServiceFile
+			}
+			out = append(out, sig)
 		}
 	}
 	return out

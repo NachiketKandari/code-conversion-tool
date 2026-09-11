@@ -344,6 +344,15 @@ func logFileIR(ctx context.Context, file *ir.File) {
 		log.Warn("unbalanced region — the parse continues leniently past it, so downstream facts may be truncated",
 			"file", file.Path, "kind", u.Kind, "line", u.Line, "col", u.Col)
 	}
+	for _, tp := range file.TPCalls {
+		if tp.ServiceFile != "" {
+			log.Info("tpcall site resolved", "file", file.Path, "service", tp.Service,
+				"service_file", tp.ServiceFile, "lines", fmt.Sprintf("%d-%d", tp.StartLine, tp.EndLine))
+		} else {
+			log.Warn("tpcall site — target service outside the scanned corpus",
+				"file", file.Path, "service", tp.Service, "lines", fmt.Sprintf("%d-%d", tp.StartLine, tp.EndLine))
+		}
+	}
 	log.Info("file extracted",
 		"file", file.Path,
 		"entry", orDash(file.Entry),

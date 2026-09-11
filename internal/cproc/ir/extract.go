@@ -208,6 +208,41 @@ func ExtractDirOpts(dir string, opts Options) ([]*File, error) {
 		}
 	}
 
+	// Tpcall service resolution (PRD-2026-09-10 tpcall-resolution pass):
+	// every tpcall's service name names the corpus file(s) it targets —
+	// the file whose entry function or base name matches, case-insensitive
+	// (Tuxedo registers the service under the entry/file name). Multiple
+	// matches join comma-separated; no match leaves the field empty (the
+	// service lives outside the scanned corpus — visible, never a guess).
+	entries := make(map[string][]string) // lowercase service → file paths
+	for _, u := range units {
+		if u.ir.Entry == "" {
+			continue
+		}
+		entries[strings.ToLower(u.ir.Entry)] = append(entries[strings.ToLower(u.ir.Entry)], u.ir.Path)
+		base := strings.ToLower(strings.TrimSuffix(filepath.Base(u.ir.Path), filepath.Ext(u.ir.Path)))
+		if base != "" && base != strings.ToLower(u.ir.Entry) {
+			entries[base] = append(entries[base], u.ir.Path)
+		}
+	}
+	for _, u := range units {
+		for i := range u.ir.TPCalls {
+			tp := &u.ir.TPCalls[i]
+			if tp.Service == "" {
+				continue
+			}
+			seen := map[string]bool{}
+			var files []string
+			for _, p := range entries[strings.ToLower(tp.Service)] {
+				if !seen[p] {
+					seen[p] = true
+					files = append(files, p)
+				}
+			}
+			tp.ServiceFile = strings.Join(files, ",")
+		}
+	}
+
 	return filesOf(units), nil
 }
 

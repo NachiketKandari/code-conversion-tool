@@ -413,3 +413,43 @@ func TestGenControllerPromptContext(t *testing.T) {
 		}
 	}
 }
+
+// TestTPCallStubNamesTargetFile pins the tpcall-resolution surfacing
+// (PRD-2026-09-10): the placeholder stub and the prompt signature both
+// name the corpus file(s) behind the called service when the IR resolved
+// them, and stay silent when unresolved.
+func TestTPCallStubNamesTargetFile(t *testing.T) {
+	s := &Service{}
+	tp := &ir.TPCall{
+		Service:     "SVC_TARGET",
+		ServiceFile: "/corpus/SVC_TARGET.pc",
+		SendFML:     []ir.FmlOp{{Kind: ir.FmlAdd, Field: "FML_A", Target: "a"}},
+		RecvFML:     []ir.FmlOp{{Kind: "get", Field: "FML_B", Target: "b"}},
+	}
+	u := plan.Unit{ID: "u01", Kind: plan.KindTPCall, Name: "TPCallTarget", TP: tp}
+	stub := s.tpcallStub(u)
+	for _, want := range []string{
+		"// tuxgo:TODO tp:SVC_TARGET",
+		"// target: /corpus/SVC_TARGET.pc (the corpus file(s) behind service SVC_TARGET)",
+		"send: FML_A",
+	} {
+		if !strings.Contains(stub, want) {
+			t.Errorf("stub missing %q:\n%s", want, stub)
+		}
+	}
+
+	// Unresolved service: no target line — honest emptiness.
+	tp.ServiceFile = ""
+	if strings.Contains(s.tpcallStub(u), "// target:") {
+		t.Error("unresolved service must not render a target line")
+	}
+
+	// The prompt signature carries the target too.
+	tp.ServiceFile = "/corpus/SVC_TARGET.pc"
+	tp.StartLine, tp.EndLine = 10, 20
+	c := &ir.Condition{Index: 1, StartLine: 5, EndLine: 30}
+	sigs := s.PlaceholderSignatures(c, &plan.Plan{Units: []plan.Unit{u}})
+	if len(sigs) != 1 || !strings.Contains(sigs[0], "target corpus file: /corpus/SVC_TARGET.pc") {
+		t.Errorf("signature = %v, want the target file suffix", sigs)
+	}
+}
