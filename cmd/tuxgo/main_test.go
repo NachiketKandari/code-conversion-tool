@@ -184,12 +184,12 @@ func TestResolveBatchInput(t *testing.T) {
 	}
 }
 
-// TestResolveAnalyzeTarget pins the analyze file-selector seam (user
-// directive, 2026-09-10): an existing path passes through;
-// `folder/file.pc` finds the file anywhere in the folder tree;
-// `folder file.pc` is the explicit two-positional form; the extension is
-// optional; zero/ambiguous matches are loud errors.
-func TestResolveAnalyzeTarget(t *testing.T) {
+// TestAnalysisTargets pins the analyze selector seam (user directives,
+// 2026-09-10): an existing path passes through; `folder/file.pc` finds the
+// file anywhere in the folder tree; `folder file.pc` is the explicit
+// two-positional form; the extension is optional; zero/ambiguous matches
+// are loud errors. The file-list forms are pinned by TestAnalysisFileList.
+func TestAnalysisTargets(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "svc", "nested")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -205,29 +205,29 @@ func TestResolveAnalyzeTarget(t *testing.T) {
 	}
 
 	// Existing path passes through untouched.
-	got, err := resolveAnalyzeTarget([]string{deep})
-	if err != nil || got != deep {
+	got, err := analysisTargets([]string{deep})
+	if err != nil || len(got) != 1 || got[0] != deep {
 		t.Errorf("existing path = %q, %v; want passthrough", got, err)
 	}
 
 	// folder/file.pc where the file lies in subfolders.
-	got, err = resolveAnalyzeTarget([]string{filepath.Join(root, "svc", "SVC_DEMO_LIST.pc")})
-	if err != nil || got != deep {
+	got, err = analysisTargets([]string{filepath.Join(root, "svc", "SVC_DEMO_LIST.pc")})
+	if err != nil || len(got) != 1 || got[0] != deep {
 		t.Errorf("folder/file selector = %q, %v; want %q", got, err, deep)
 	}
 
 	// Two positionals: folder + bare name, extension optional.
-	got, err = resolveAnalyzeTarget([]string{root, "SVC_DEMO_LIST.pc"})
-	if err != nil || got != deep {
+	got, err = analysisTargets([]string{root, "SVC_DEMO_LIST.pc"})
+	if err != nil || len(got) != 1 || got[0] != deep {
 		t.Errorf("folder + name = %q, %v; want %q", got, err, deep)
 	}
-	got, err = resolveAnalyzeTarget([]string{root, "svc_demo_list"}) // case + extension optional
-	if err != nil || got != deep {
+	got, err = analysisTargets([]string{root, "svc_demo_list"}) // case + extension optional
+	if err != nil || len(got) != 1 || got[0] != deep {
 		t.Errorf("stem selector = %q, %v; want %q", got, err, deep)
 	}
 
 	// Zero and multiple matches are loud errors.
-	if _, err := resolveAnalyzeTarget([]string{root, "NOPE"}); err == nil || !strings.Contains(err.Error(), "no .pc/.pcf") {
+	if _, err := analysisTargets([]string{root, "NOPE"}); err == nil || !strings.Contains(err.Error(), "no .pc/.pcf") {
 		t.Errorf("zero-match err = %v, want guidance", err)
 	}
 	dup := filepath.Join(root, "dup.pc")
@@ -238,14 +238,14 @@ func TestResolveAnalyzeTarget(t *testing.T) {
 	if err := os.WriteFile(dup2, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := resolveAnalyzeTarget([]string{root, "DUP"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+	if _, err := analysisTargets([]string{root, "DUP"}); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Errorf("multi-match err = %v, want ambiguous listing", err)
 	}
 	// Missing folder, either form.
-	if _, err := resolveAnalyzeTarget([]string{filepath.Join(root, "gone", "x.pc")}); err == nil {
+	if _, err := analysisTargets([]string{filepath.Join(root, "gone", "x.pc")}); err == nil {
 		t.Error("missing folder must error")
 	}
-	if _, err := resolveAnalyzeTarget([]string{root, "gone"}); err == nil {
+	if _, err := analysisTargets([]string{root, "gone"}); err == nil {
 		t.Error("zero-match selector must error")
 	}
 }
@@ -284,5 +284,86 @@ func TestAnalyzePattern(t *testing.T) {
 	// A file target rejects the flag loudly.
 	if err := runAnalyze(context.Background(), []string{"-pattern", "x", filepath.Join(dirPath, "SVC_DEMO_LIST.pc")}); err == nil || !strings.Contains(err.Error(), "directory targets only") {
 		t.Errorf("file-target pattern err = %v, want directory-targets-only", err)
+	}
+}
+
+// TestAnalysisFileList pins the .txt file-list selector (user directive,
+// 2026-09-10): a newline-separated name list evaluates exactly those files
+// inside the folder tree — case-insensitive, extension optional, `#`
+// comments and blanks skipped, duplicates collapsed, every miss a loud
+// error naming the list. `folder list.txt` and a lone `list.txt` (its own
+// folder) both work.
+func TestAnalysisFileList(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "svc")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(sub, "SVC_DEMO_LIST.pc")
+	if err := os.WriteFile(deep, []byte("void SVC_DEMO_LIST() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lib := filepath.Join(root, "fn_lib.pcf")
+	if err := os.WriteFile(lib, []byte("int fn_x() { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	listPath := filepath.Join(root, "files.txt")
+	list := "# triage selection\n\nsvc_demo_list\nfn_lib.PCF\nsvc_demo_list   # duplicate collapses\n"
+	if err := os.WriteFile(listPath, []byte(list), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// folder + list: both files resolve in list order.
+	got, err := analysisTargets([]string{root, "files.txt"})
+	if err != nil || len(got) != 2 || got[0] != deep || got[1] != lib {
+		t.Errorf("file-list resolution = %v, %v; want [%s %s]", got, err, deep, lib)
+	}
+
+	// A lone list evaluates against its own folder.
+	got, err = analysisTargets([]string{listPath})
+	if err != nil || len(got) != 2 || got[0] != deep {
+		t.Errorf("lone list = %v, %v; want both files", got, err)
+	}
+
+	// A missing name errors naming the list.
+	bad := filepath.Join(root, "bad.txt")
+	if err := os.WriteFile(bad, []byte("svc_demo_list\nNOPE\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := analysisTargets([]string{root, "bad.txt"}); err == nil || !strings.Contains(err.Error(), "bad.txt") {
+		t.Errorf("list miss err = %v, want the list named", err)
+	}
+
+	// An empty (comment-only) list is a loud error.
+	empty := filepath.Join(root, "empty.txt")
+	if err := os.WriteFile(empty, []byte("# nothing here\n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := analysisTargets([]string{root, "empty.txt"}); err == nil || !strings.Contains(err.Error(), "resolves to no files") {
+		t.Errorf("empty-list err = %v, want guidance", err)
+	}
+
+	// End-to-end through runAnalyze: the CSV carries exactly the listed files.
+	csv := filepath.Join(t.TempDir(), "list.csv")
+	if err := runAnalyze(context.Background(), []string{"-csv", csv, root, listPath}); err != nil {
+		t.Fatalf("runAnalyze(file list) failed: %v", err)
+	}
+	data, err := os.ReadFile(csv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+	rows := 0
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, root) {
+			rows++
+		}
+	}
+	if rows != 2 {
+		t.Errorf("file-list CSV rows = %d, want exactly the 2 listed files:\n%s", rows, out)
+	}
+	if !strings.Contains(out, "SVC_DEMO_LIST.pc") || !strings.Contains(out, "fn_lib.pcf") {
+		t.Errorf("file-list CSV missing listed files:\n%s", out)
 	}
 }

@@ -170,8 +170,8 @@ Global Flags:
 
 Available Commands:
   analyze      Analyze Pro*C/Tuxedo complexity (+1/+5/+10/+20 rubric) and export CSV
-               (file selectors: analyze folder/file.pc or analyze folder file.pc —
-               the file may lie anywhere in the folder's subfolders)
+               (selectors: analyze folder/file.pc, analyze folder file.pc, or
+               analyze folder list.txt — a newline-separated file list)
   extract      Extract the deterministic IR (query units + QueryType marking, condition
                inventory, FML ops, external fns) as JSON
   plan         Generate the deterministic decomposition plan from the IR + the
@@ -298,28 +298,91 @@ func deriveValueFlags() map[string]bool {
 	return valueFlags
 }
 
-// resolveAnalyzeTarget resolves the analyze target from the positional
-// arguments (user directive, 2026-09-10): an existing path passes through
-// untouched; `analyze folder/file.pc` where the file lies deeper in the
-// folder's tree walks it for a case-insensitive basename match; `analyze
-// folder file.pc` (two positionals) is the explicit folder+name form. A
-// selector may omit the extension (`SVC_DEMO_LIST` matches SVC_DEMO_LIST.pc).
-// Exactly one match wins; zero or several matches are loud errors — never a
-// silent pick.
-func resolveAnalyzeTarget(positional []string) (string, error) {
-	if len(positional) == 1 {
-		p := positional[0]
-		if _, err := os.Stat(p); err == nil {
-			return p, nil
+// analysisTargets resolves the analyze targets from the positional
+// arguments (user directives, 2026-09-10): an existing path passes through
+// untouched (file → one report, directory → its tree); `analyze
+// folder/file.pc` where the file lies deeper in the folder's tree walks it
+// for a case-insensitive basename match; `analyze folder file.pc` (two
+// positionals) is the explicit folder+name form. A selector may omit the
+// extension (`SVC_DEMO_LIST` matches SVC_DEMO_LIST.pc). A `.txt` second
+// positional (or a lone `.txt`) is a newline-separated file list: every
+// non-blank, non-`#` line resolves inside the folder tree with the same
+// one-match rule, duplicates collapse, and any miss errors naming the
+// list. Exactly one match wins everywhere; zero or several are loud
+// errors — never a silent pick.
+func analysisTargets(positional []string) ([]string, error) {
+	if len(positional) == 2 {
+		if isFileList(positional[1]) {
+			listPath := positional[1]
+			if _, err := os.Stat(listPath); err != nil {
+				listPath = filepath.Join(positional[0], listPath)
+			}
+			return resolveFileList(positional[0], listPath)
 		}
-		dir, name := filepath.Split(p)
-		dir = strings.TrimSuffix(dir, string(filepath.Separator))
-		if dir == "" {
-			return p, nil // no folder to search — os.Stat reports it
+		found, err := findAnalysisFile(positional[0], positional[1])
+		if err != nil {
+			return nil, err
 		}
-		return findAnalysisFile(dir, name)
+		return []string{found}, nil
 	}
-	return findAnalysisFile(positional[0], positional[1])
+	p := positional[0]
+	if _, err := os.Stat(p); err == nil {
+		if isFileList(p) {
+			// A lone list evaluates against its own folder.
+			return resolveFileList(filepath.Dir(p), p)
+		}
+		return []string{p}, nil
+	}
+	dir, name := filepath.Split(p)
+	dir = strings.TrimSuffix(dir, string(filepath.Separator))
+	if dir == "" {
+		return []string{p}, nil // no folder to search — os.Stat reports it
+	}
+	found, err := findAnalysisFile(dir, name)
+	if err != nil {
+		return nil, err
+	}
+	return []string{found}, nil
+}
+
+// isFileList reports whether the argument names a newline-separated file
+// list (.txt) — the analyze name-list selector form.
+func isFileList(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".txt")
+}
+
+// resolveFileList reads the newline-separated name list and resolves every
+// name inside dir's tree with the single-file matcher (case-insensitive,
+// extension optional, one-match-wins). Blank lines and #-comments are
+// skipped; duplicate resolutions collapse to one report.
+func resolveFileList(dir, listPath string) ([]string, error) {
+	data, err := os.ReadFile(listPath)
+	if err != nil {
+		return nil, fmt.Errorf("analyze: reading file list %s: %w", listPath, err)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i] // inline comments ride the # convention
+		}
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		found, err := findAnalysisFile(dir, name)
+		if err != nil {
+			return nil, fmt.Errorf("analyze: file list %s: %w", listPath, err)
+		}
+		if !seen[found] {
+			seen[found] = true
+			out = append(out, found)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("analyze: file list %s resolves to no files", listPath)
+	}
+	return out, nil
 }
 
 // findAnalysisFile walks dir recursively for the one .pc/.pcf file whose
@@ -393,19 +456,35 @@ func runAnalyze(ctx context.Context, args []string) error {
 		return fmt.Errorf("must provide a file or directory to analyze")
 	}
 
-	targetPath, err := resolveAnalyzeTarget(remaining)
+	paths, err := analysisTargets(remaining)
 	if err != nil {
 		return err
 	}
-	telemetry.Log(ctx).Info("analyze invoked", "target", targetPath, "csv", *csvPath)
+	telemetry.Log(ctx).Info("analyze invoked", "targets", len(paths), "first", paths[0], "csv", *csvPath)
 
-	fi, err := os.Stat(targetPath)
-	if err != nil {
-		return fmt.Errorf("cannot access target path %s: %w", targetPath, err)
+	dirMode := false
+	var reports []*analyzer.Report
+	if len(paths) == 1 {
+		fi, err := os.Stat(paths[0])
+		if err != nil {
+			return fmt.Errorf("cannot access target path %s: %w", paths[0], err)
+		}
+		if !fi.IsDir() {
+			if strings.TrimSpace(*pattern) != "" {
+				return fmt.Errorf("analyze: -pattern applies to directory targets only (passed %q)", paths[0])
+			}
+			rep, err := analyzer.AnalyzeFile(paths[0], opts)
+			if err != nil {
+				return err
+			}
+			reports = []*analyzer.Report{rep}
+		} else {
+			dirMode = true
+		}
 	}
 
-	var reports []*analyzer.Report
-	if fi.IsDir() {
+	if dirMode {
+		targetPath := paths[0]
 		reps, err := analyzer.AnalyzeDir(targetPath, opts)
 		if err != nil {
 			return err
@@ -425,19 +504,21 @@ func runAnalyze(ctx context.Context, args []string) error {
 			reps = kept
 		}
 		reports = reps
-	} else {
+	} else if len(paths) > 1 {
 		if strings.TrimSpace(*pattern) != "" {
-			return fmt.Errorf("analyze: -pattern applies to directory targets only (passed %q)", targetPath)
+			return fmt.Errorf("analyze: -pattern applies to directory targets only (a file list selects its own files)")
 		}
-		rep, err := analyzer.AnalyzeFile(targetPath, opts)
-		if err != nil {
-			return err
+		for _, p := range paths {
+			rep, err := analyzer.AnalyzeFile(p, opts)
+			if err != nil {
+				return err
+			}
+			reports = append(reports, rep)
 		}
-		reports = []*analyzer.Report{rep}
 	}
 
 	if len(reports) == 0 {
-		fmt.Fprintf(os.Stderr, "no .pc or .pcf files found in %s\n", targetPath)
+		fmt.Fprintf(os.Stderr, "no .pc or .pcf files found in %s\n", strings.Join(paths, ", "))
 		return nil
 	}
 

@@ -18,12 +18,13 @@ go run ./cmd/tuxgo <command> [flags] <path>
 
 ## `analyze` — complexity triage
 
-Scans `.pc`/`.pcf` files and ranks them by conversion complexity. A single file prints one report; a directory walks recursively and produces one CSV row per file. A **file selector** pins one file inside a folder — `folder/file.pc` finds the file anywhere in the folder's subfolders, and the two-positional form `folder file.pc` is equivalent; the extension is optional and matching is case-insensitive (`analyze testdata svc_demo_list` finds `testdata/anything/svc_demo_list.pc`). Exactly one match analyzes; zero or several matches are loud errors naming the candidates:
+Scans `.pc`/`.pcf` files and ranks them by conversion complexity. A single file prints one report; a directory walks recursively and produces one CSV row per file. A **file selector** pins one file inside a folder — `folder/file.pc` finds the file anywhere in the folder's subfolders, and the two-positional form `folder file.pc` is equivalent; the extension is optional and matching is case-insensitive (`analyze testdata svc_demo_list` finds `testdata/anything/svc_demo_list.pc`). A **file list** selects several at once: `folder list.txt` (or a lone `list.txt`, which evaluates against its own folder) where the `.txt` holds one filename per line — case-insensitive, extension optional, `#` comments and blank lines skipped, duplicates collapsed, each name resolved anywhere in the folder tree. Exactly one match wins everywhere; zero or several matches, or any list miss, are loud errors naming the candidates/list — never a silent pick:
 
 ```sh
 go run ./cmd/tuxgo analyze testdata/nav
 go run ./cmd/tuxgo analyze testdata/nav/SVC_DEMO_LIST.pc      # exact or searched within the folder tree
 go run ./cmd/tuxgo analyze testdata/nav SVC_DEMO_LIST         # folder + bare name, extension optional
+go run ./cmd/tuxgo analyze testdata/nav my-picks.txt          # newline-separated file list
 go run ./cmd/tuxgo analyze path/to/pc-files -pattern mf_      # one family inside a folder tree
 go run ./cmd/tuxgo analyze path/to/pc-files -csv report.csv
 ```
