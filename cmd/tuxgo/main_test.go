@@ -367,3 +367,89 @@ func TestAnalysisFileList(t *testing.T) {
 		t.Errorf("file-list CSV missing listed files:\n%s", out)
 	}
 }
+
+// TestAnalysisNameSelectorSets pins the multi-name selector forms (user
+// directive, 2026-09-10): comma-separated, space-separated (quoted), and
+// separate positionals — all mixed freely, duplicates collapsed, every
+// miss a loud error. The .txt list lines accept the same separators.
+func TestAnalysisNameSelectorSets(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "svc")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(sub, "SVC_DEMO_LIST.pc")
+	if err := os.WriteFile(deep, []byte("void SVC_DEMO_LIST() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lib := filepath.Join(root, "fn_lib.pcf")
+	if err := os.WriteFile(lib, []byte("int fn_x() { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	both := []string{deep, lib}
+
+	// Comma-separated in one quoted argument.
+	got, err := analysisTargets([]string{root, "SVC_DEMO_LIST.pc, fn_lib.pcf"})
+	if err != nil || !reflect.DeepEqual(got, both) {
+		t.Errorf("comma form = %v, %v; want %v", got, err, both)
+	}
+
+	// Space-separated in one quoted argument (stems, case-insensitive).
+	got, err = analysisTargets([]string{root, "svc_demo_list fn_lib"})
+	if err != nil || !reflect.DeepEqual(got, both) {
+		t.Errorf("space form = %v, %v; want %v", got, err, both)
+	}
+
+	// Separate positionals, mixed with a trailing comma.
+	got, err = analysisTargets([]string{root, "svc_demo_list,", "fn_lib"})
+	if err != nil || !reflect.DeepEqual(got, both) {
+		t.Errorf("positional form = %v, %v; want %v", got, err, both)
+	}
+
+	// Duplicates collapse across the whole set.
+	got, err = analysisTargets([]string{root, "svc_demo_list, SVC_DEMO_LIST.pc"})
+	if err != nil || len(got) != 1 || got[0] != deep {
+		t.Errorf("duplicate form = %v, %v; want one file", got, err)
+	}
+
+	// Any miss is a loud error; empty tokens error too.
+	if _, err := analysisTargets([]string{root, "svc_demo_list, NOPE"}); err == nil {
+		t.Error("multi-name miss must error")
+	}
+	if _, err := analysisTargets([]string{root, " ,"}); err == nil || !strings.Contains(err.Error(), "no file names") {
+		t.Errorf("empty set err = %v, want guidance", err)
+	}
+	// A lone multi-name argument without a folder names the fix.
+	if _, err := analysisTargets([]string{"a.pc, b.pc"}); err == nil || !strings.Contains(err.Error(), "target folder") {
+		t.Errorf("no-folder multi-name err = %v, want guidance", err)
+	}
+
+	// The .txt list accepts comma-separated lines too.
+	listPath := filepath.Join(root, "files.txt")
+	if err := os.WriteFile(listPath, []byte("svc_demo_list, fn_lib # one line, two names\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = analysisTargets([]string{root, "files.txt"})
+	if err != nil || !reflect.DeepEqual(got, both) {
+		t.Errorf("comma list line = %v, %v; want %v", got, err, both)
+	}
+
+	// End-to-end: the quoted comma form drives a real run.
+	csv := filepath.Join(t.TempDir(), "names.csv")
+	if err := runAnalyze(context.Background(), []string{"-csv", csv, root, "svc_demo_list, fn_lib"}); err != nil {
+		t.Fatalf("runAnalyze(multi-name) failed: %v", err)
+	}
+	data, err := os.ReadFile(csv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := 0
+	for _, l := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(l, root) {
+			rows++
+		}
+	}
+	if rows != 2 {
+		t.Errorf("multi-name CSV rows = %d, want 2:\n%s", rows, data)
+	}
+}

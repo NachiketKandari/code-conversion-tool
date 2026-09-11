@@ -170,8 +170,8 @@ Global Flags:
 
 Available Commands:
   analyze      Analyze Pro*C/Tuxedo complexity (+1/+5/+10/+20 rubric) and export CSV
-               (selectors: analyze folder/file.pc, analyze folder file.pc, or
-               analyze folder list.txt — a newline-separated file list)
+               (selectors: analyze folder/file.pc, analyze folder file.pc,
+               analyze folder "a.pc, b.pc" / a b c, or a .txt file list)
   extract      Extract the deterministic IR (query units + QueryType marking, condition
                inventory, FML ops, external fns) as JSON
   plan         Generate the deterministic decomposition plan from the IR + the
@@ -302,47 +302,89 @@ func deriveValueFlags() map[string]bool {
 // arguments (user directives, 2026-09-10): an existing path passes through
 // untouched (file → one report, directory → its tree); `analyze
 // folder/file.pc` where the file lies deeper in the folder's tree walks it
-// for a case-insensitive basename match; `analyze folder file.pc` (two
-// positionals) is the explicit folder+name form. A selector may omit the
-// extension (`SVC_DEMO_LIST` matches SVC_DEMO_LIST.pc). A `.txt` second
-// positional (or a lone `.txt`) is a newline-separated file list: every
-// non-blank, non-`#` line resolves inside the folder tree with the same
-// one-match rule, duplicates collapse, and any miss errors naming the
-// list. Exactly one match wins everywhere; zero or several are loud
-// errors — never a silent pick.
+// for a case-insensitive basename match; `analyze folder file.pc` is the
+// explicit folder+name form — and the names after the folder may be
+// multiple positionals or one quoted argument, comma- or space-separated
+// (`analyze folder "a.pc, b.pc"`, `analyze folder a b c`). A selector may
+// omit the extension (`SVC_DEMO_LIST` matches SVC_DEMO_LIST.pc). A `.txt`
+// second positional (or a lone `.txt`) is a file list whose lines carry
+// one-or-more comma/whitespace-separated names: every name resolves inside
+// the folder tree with the same one-match rule, duplicates collapse, and
+// any miss errors naming the list. Exactly one match wins everywhere; zero
+// or several are loud errors — never a silent pick.
 func analysisTargets(positional []string) ([]string, error) {
-	if len(positional) == 2 {
-		if isFileList(positional[1]) {
-			listPath := positional[1]
-			if _, err := os.Stat(listPath); err != nil {
-				listPath = filepath.Join(positional[0], listPath)
+	if len(positional) == 1 {
+		p := positional[0]
+		if _, err := os.Stat(p); err == nil {
+			if isFileList(p) {
+				// A lone list evaluates against its own folder.
+				return resolveFileList(filepath.Dir(p), p)
 			}
-			return resolveFileList(positional[0], listPath)
+			return []string{p}, nil
 		}
-		found, err := findAnalysisFile(positional[0], positional[1])
+		if hasSelectorSeparators(p) {
+			return nil, fmt.Errorf("analyze: multiple file names need a target folder first: analyze <folder> %q", p)
+		}
+		dir, name := filepath.Split(p)
+		dir = strings.TrimSuffix(dir, string(filepath.Separator))
+		if dir == "" {
+			return []string{p}, nil // no folder to search — os.Stat reports it
+		}
+		found, err := findAnalysisFile(dir, name)
 		if err != nil {
 			return nil, err
 		}
 		return []string{found}, nil
 	}
-	p := positional[0]
-	if _, err := os.Stat(p); err == nil {
-		if isFileList(p) {
-			// A lone list evaluates against its own folder.
-			return resolveFileList(filepath.Dir(p), p)
+	folder := positional[0]
+	if len(positional) == 2 && isFileList(positional[1]) {
+		listPath := positional[1]
+		if _, err := os.Stat(listPath); err != nil {
+			listPath = filepath.Join(folder, listPath)
 		}
-		return []string{p}, nil
+		return resolveFileList(folder, listPath)
 	}
-	dir, name := filepath.Split(p)
-	dir = strings.TrimSuffix(dir, string(filepath.Separator))
-	if dir == "" {
-		return []string{p}, nil // no folder to search — os.Stat reports it
+	return resolveNameSet(folder, positional[1:])
+}
+
+// resolveNameSet resolves the name arguments after the folder — each
+// argument may carry one or many comma/whitespace-separated names — with
+// the single-file matcher, in argument order, duplicates collapsed.
+func resolveNameSet(folder string, args []string) ([]string, error) {
+	var names []string
+	for _, arg := range args {
+		names = append(names, splitNameSelectors(arg)...)
 	}
-	found, err := findAnalysisFile(dir, name)
-	if err != nil {
-		return nil, err
+	if len(names) == 0 {
+		return nil, fmt.Errorf("analyze: no file names given after %q", folder)
 	}
-	return []string{found}, nil
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range names {
+		found, err := findAnalysisFile(folder, name)
+		if err != nil {
+			return nil, err
+		}
+		if !seen[found] {
+			seen[found] = true
+			out = append(out, found)
+		}
+	}
+	return out, nil
+}
+
+// splitNameSelectors splits one selector argument (or a file-list line)
+// into individual names: commas and whitespace are both separators.
+func splitNameSelectors(arg string) []string {
+	return strings.FieldsFunc(arg, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+}
+
+// hasSelectorSeparators reports whether the argument carries comma or
+// whitespace separators — a multi-name selector without a folder.
+func hasSelectorSeparators(arg string) bool {
+	return strings.ContainsAny(arg, ", \t")
 }
 
 // isFileList reports whether the argument names a newline-separated file
@@ -351,10 +393,11 @@ func isFileList(path string) bool {
 	return strings.EqualFold(filepath.Ext(path), ".txt")
 }
 
-// resolveFileList reads the newline-separated name list and resolves every
-// name inside dir's tree with the single-file matcher (case-insensitive,
-// extension optional, one-match-wins). Blank lines and #-comments are
-// skipped; duplicate resolutions collapse to one report.
+// resolveFileList reads the name list and resolves every name inside dir's
+// tree with the single-file matcher (case-insensitive, extension optional,
+// one-match-wins). Lines carry one-or-more comma/whitespace-separated
+// names; blank lines and #-comments (inline too) are skipped; duplicate
+// resolutions collapse to one report.
 func resolveFileList(dir, listPath string) ([]string, error) {
 	data, err := os.ReadFile(listPath)
 	if err != nil {
@@ -366,17 +409,15 @@ func resolveFileList(dir, listPath string) ([]string, error) {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
 			line = line[:i] // inline comments ride the # convention
 		}
-		name := strings.TrimSpace(line)
-		if name == "" {
-			continue
-		}
-		found, err := findAnalysisFile(dir, name)
-		if err != nil {
-			return nil, fmt.Errorf("analyze: file list %s: %w", listPath, err)
-		}
-		if !seen[found] {
-			seen[found] = true
-			out = append(out, found)
+		for _, name := range splitNameSelectors(line) {
+			found, err := findAnalysisFile(dir, name)
+			if err != nil {
+				return nil, fmt.Errorf("analyze: file list %s: %w", listPath, err)
+			}
+			if !seen[found] {
+				seen[found] = true
+				out = append(out, found)
+			}
 		}
 	}
 	if len(out) == 0 {
